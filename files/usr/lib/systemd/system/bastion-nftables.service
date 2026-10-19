@@ -1,0 +1,19 @@
+[Unit]
+Description=Load the bastion nftables ruleset
+Before=network-pre.target
+Wants=network-pre.target
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=firewalld.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables/bastion.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables/bastion.nft
+# Deliberately not flushing on stop: losing the firewall because a unit was restarted is worse
+# than leaving it loaded.
+ExecStop=/bin/true
+
+[Install]
+WantedBy=multi-user.target

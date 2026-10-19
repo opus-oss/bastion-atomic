@@ -1,0 +1,74 @@
+# Build the image and publish it to ghcr.io.
+#
+# This exists because an Atomic machine downloads a finished OS rather than building its own.
+# The image has to live somewhere `rpm-ostree rebase` can pull from, and GitHub Container
+# Registry is that place. Nothing is ever built on the laptop.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Rebuild nightly so upstream secureblue fixes land without anyone pushing. The base tag is
+  # pinned in the Containerfile, so this picks up rebuilds of that tag, not a new major.
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+env:
+  IMAGE: bastion-atomic
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Needed to push to ghcr.io as GITHUB_TOKEN; no personal token or secret required.
+      packages: write
+      # Lets the build attach a signed provenance attestation, so a puller can verify the image
+      # came from this workflow in this repo and not from someone who got at the registry.
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner is Ubuntu with 14 GB of disk, and a kernel build plus an ostree image does
+      # not fit alongside the preinstalled Android SDK and friends. Reclaim it first.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          df -h / | tail -1
+
+      - name: Build
+        id: build
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ env.IMAGE }}
+          # latest plus the commit, so a bad image can be rolled back to a known good digest
+          # rather than only to "whatever latest was yesterday".
+          tags: latest ${{ github.sha }}
+          containerfiles: ./Containerfile
+          oci: true
+
+      # Pull requests build but must not publish: a fork opening a PR would otherwise overwrite
+      # the image everyone's laptop is tracking.
+      - name: Push
+        if: github.event_name != 'pull_request'
+        id: push
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build.outputs.image }}
+          tags: ${{ steps.build.outputs.tags }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

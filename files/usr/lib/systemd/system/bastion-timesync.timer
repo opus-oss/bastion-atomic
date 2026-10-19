@@ -1,0 +1,13 @@
+[Unit]
+Description=Set the clock from HTTPS servers periodically
+
+[Timer]
+# Soon after boot, because the clock being wrong breaks certificate validation and therefore
+# everything else; then at a loose interval with jitter so the requests are not a pattern.
+OnBootSec=30s
+OnUnitActiveSec=3h
+RandomizedDelaySec=30m
+Persistent=false
+
+[Install]
+WantedBy=timers.target

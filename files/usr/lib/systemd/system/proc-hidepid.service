@@ -1,0 +1,16 @@
+# /proc with hidepid=2: a process is visible only to its own user, root still sees everything,
+# so one account cannot read another's command lines, environments or fd tables. On NixOS this
+# needed an option marked internal; here it is an ordinary remount.
+[Unit]
+Description=Remount /proc with hidepid=2
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mount -o remount,nosuid,nodev,noexec,hidepid=2 /proc
+
+[Install]
+WantedBy=sysinit.target

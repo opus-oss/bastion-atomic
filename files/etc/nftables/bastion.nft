@@ -1,0 +1,45 @@
+#!/usr/sbin/nft -f
+# From modules/firewall.nix in the NixOS build. Nothing comes in unless something here opens it,
+# nothing is forwarded, and no program can send a plaintext DNS query around the encrypted
+# resolver. Outbound is otherwise allowed, because Tor Browser and Flatpak apps need ports that
+# cannot be listed in advance.
+#
+# firewalld is disabled in the image in favour of this. Running both means two tools fighting
+# over the same hooks, and firewalld's zone model hides what the rules actually are.
+
+flush ruleset
+
+table inet bastion {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iif lo accept
+    ct state established,related accept
+    # No ping replies: nothing here needs to be discoverable.
+    icmp type echo-request drop
+    icmpv6 type echo-request drop
+    # ICMPv6 beyond echo is load-bearing for IPv6 to work at all.
+    icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
+    # Guest networks from libvirt, when they exist. Named explicitly so the default stays shut.
+    iifname "virbr*" accept
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    # Routing for libvirt's bridges only, with return traffic matched by conntrack rather than a
+    # second blanket rule. Every other interface stays unroutable.
+    iifname "virbr*" accept
+    oifname "virbr*" ct state established,related accept
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+
+    # Loopback first, so the local encrypted resolver is reachable before the reject below.
+    oif lo accept
+    # Plaintext DNS is a leak when every lookup is supposed to go out over HTTPS. Rejected
+    # rather than dropped so a misconfigured program fails immediately instead of hanging.
+    udp dport { 53, 5353, 5355 } counter reject
+    tcp dport { 53, 5355 } counter reject
+  }
+}

@@ -1,0 +1,32 @@
+# The clock, from the HTTPS Date headers of several independent servers, the way Kicksecure's
+# sdwdate does it. No NTP client runs: NTP is unauthenticated, and NTS is a protocol few servers
+# speak and a fingerprint of its own. One server is picked per pool, every answer is checked
+# against the others, and the clock only moves when enough of them agree.
+[Unit]
+Description=Set the clock from HTTPS Date headers instead of NTP
+After=network-online.target
+Wants=network-online.target
+# Pointless before there is a route, and harmful to retry in a tight loop if there never is.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/bastion-timesync.py --config /etc/bastion/timesync.json
+# Only the clock. Everything else systemd can take away, it takes away.
+CapabilityBoundingSet=CAP_SYS_TIME
+AmbientCapabilities=CAP_SYS_TIME
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service @clock
+SystemCallArchitectures=native
