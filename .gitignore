@@ -1,0 +1,4 @@
+# The signing key lives in the SIGNING_SECRET repository secret, never in the tree.
+cosign.key
+*.key
+__pycache__/

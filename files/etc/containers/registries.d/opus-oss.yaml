@@ -1,0 +1,4 @@
+# Signatures for this image are cosign attachments stored next to it in the registry.
+docker:
+  ghcr.io/opus-oss:
+    use-sigstore-attachments: true

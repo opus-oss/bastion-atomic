@@ -1,0 +1,20 @@
+{
+  "pools": [
+    ["www.gnu.org", "www.python.org"],
+    ["www.torproject.org", "www.eff.org"],
+    ["www.kernel.org", "www.debian.org"],
+    ["fedoraproject.org", "www.gnome.org"],
+    ["www.mozilla.org", "www.thunderbird.net"]
+  ],
+  "quorum": 3,
+  "tolerance": 2.0,
+  "stepThreshold": 1.0,
+  "maxRtt": 5.0,
+  "timeout": 10.0,
+  "floor": 1790812800,
+  "resolvers": [
+    "sdns://AgMAAAAAAAAABzkuOS45LjkADWRucy5xdWFkOS5uZXQKL2Rucy1xdWVyeQ",
+    "sdns://AgYAAAAAAAAABzEuMS4xLjEAEmNsb3VkZmxhcmUtZG5zLmNvbQovZG5zLXF1ZXJ5",
+    "sdns://AgYAAAAAAAAACzE5NC4yNDIuMi4yAA9kbnMubXVsbHZhZC5uZXQKL2Rucy1xdWVyeQ"
+  ]
+}

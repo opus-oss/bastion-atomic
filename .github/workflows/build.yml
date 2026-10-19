@@ -83,3 +83,17 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      # The attestation above is for humans with the GitHub CLI; rpm-ostree cannot check it. What
+      # `ostree-image-signed:` verifies is a cosign signature against the key in
+      # /etc/containers/policy.json, so the image is signed with that key here. The private half
+      # is the SIGNING_SECRET repository secret, created without a password.
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+
+      - name: Sign
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ""
+        run: cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.push.outputs.digest }}

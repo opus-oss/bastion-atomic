@@ -11,11 +11,27 @@ ARG BASE=ghcr.io/secureblue/silverblue-main-hardened
 ARG TAG=latest
 FROM ${BASE}:${TAG}
 
+# DoH resolver, installed before the copy so files/etc/dnscrypt-proxy/dnscrypt-proxy.toml replaces
+# the package's default rather than being set aside as .rpmnew.
+RUN dnf5 install -y dnscrypt-proxy && dnf5 clean all
+
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
 # lands where is obvious from the tree.
 COPY files/ /
 
 RUN set -eux; \
+    \
+    # --- DNS -----------------------------------------------------------------------------------
+    # dnscrypt-proxy on loopback is the only resolver. unbound and dnsconfd would forward to
+    # whatever DHCP offered, in plaintext on port 53, which the firewall below rejects.
+    systemctl disable unbound.service dnsconfd.service || true; \
+    systemctl enable dnscrypt-proxy.service; \
+    \
+    # --- Image signature -----------------------------------------------------------------------
+    # Trust this repo's cosign key for ghcr.io/opus-oss, so `rpm-ostree upgrade` keeps verifying
+    # every new build. secureblue's policy.json is extended in place, not replaced, so its own
+    # entries keep tracking upstream.
+    python3 -c 'import json; p = "/etc/containers/policy.json"; d = json.load(open(p)); d["transports"]["docker"]["ghcr.io/opus-oss"] = [{"type": "sigstoreSigned", "keyPath": "/etc/pki/containers/opus-oss.pub", "signedIdentity": {"type": "matchRepository"}}]; json.dump(d, open(p, "w"), indent=2)'; \
     \
     # --- Firewall ------------------------------------------------------------------------------
     # firewalld off, the nftables ruleset from modules/firewall.nix in its place. The rules are

@@ -1,0 +1,48 @@
+# DNS over HTTPS on port 443, the way the NixOS build ended up doing it: TCP 853 is RST-filtered
+# on at least one network this machine uses, so resolved's DoT is not an option. The nftables
+# ruleset rejects plaintext DNS leaving the machine, so this is the only way a name gets resolved.
+#
+# Servers are pinned by stamp below instead of fetched from a public list: the list itself would
+# need a working resolver to download, and a bootstrap resolver means plaintext DNS on port 53,
+# which the firewall rejects. The stamps carry the IP, so nothing has to be looked up first.
+# The same three are the DoH fallback in /etc/bastion/timesync.json.
+
+listen_addresses = ['127.0.0.1:53', '[::1]:53']
+server_names = ['quad9', 'cloudflare', 'mullvad']
+
+doh_servers = true
+dnscrypt_servers = false
+odoh_servers = false
+ipv6_servers = false
+http3 = false
+
+# Never fall back to the system resolver: that is this process.
+ignore_system_dns = true
+bootstrap_resolvers = []
+netprobe_timeout = -1
+
+lb_strategy = 'p2'
+timeout = 5000
+keepalive = 30
+
+cache = true
+cache_size = 4096
+cache_min_ttl = 60
+cache_max_ttl = 86400
+
+block_ipv6 = false
+block_unqualified = true
+block_undelegated = true
+
+log_level = 2
+use_syslog = true
+
+[static]
+  [static.'quad9']
+  stamp = 'sdns://AgMAAAAAAAAABzkuOS45LjkADWRucy5xdWFkOS5uZXQKL2Rucy1xdWVyeQ'
+
+  [static.'cloudflare']
+  stamp = 'sdns://AgYAAAAAAAAABzEuMS4xLjEAEmNsb3VkZmxhcmUtZG5zLmNvbQovZG5zLXF1ZXJ5'
+
+  [static.'mullvad']
+  stamp = 'sdns://AgYAAAAAAAAACzE5NC4yNDIuMi4yAA9kbnMubXVsbHZhZC5uZXQKL2Rucy1xdWVyeQ'
