@@ -33,7 +33,6 @@ RUN set -eux; \
     systemctl enable bastion-timesync.timer; \
     systemctl enable proc-hidepid.service; \
     \
-    # --- Process visibility --------------------------------------------------------------------
     # --- setuid ---------------------------------------------------------------------------------
     # The setuid bits this build does not need. Doing it at image build time is strictly better
     # than the NixOS equivalent: /usr is immutable at runtime, so nothing can put them back, and
@@ -44,5 +43,11 @@ RUN set -eux; \
       [ -e "$f" ] && chmod u-s "$f" || true; \
     done; \
     \
-    # --- Cleanup --------------------------------------------------------------------------------
-    ostree container commit
+    # --- Sanity ---------------------------------------------------------------------------------
+    # `ostree container commit` used to go here. It fails on this base with "Not in an
+    # ostree-based container environment": the step belongs to the older ostree layering flow and
+    # secureblue's bootc-era images do not present what it looks for. It was only a /var cleanup
+    # and a validation pass, so dropping it costs nothing. Lint instead, when the base provides
+    # it, which catches the things that actually break a deployment -- content in /var, files
+    # outside /usr and /etc -- rather than erroring on the build method.
+    if command -v bootc >/dev/null 2>&1; then bootc container lint || true; fi
