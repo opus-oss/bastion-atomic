@@ -65,6 +65,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # push-to-registry above logs in inside its own action, and that login does not outlive the
+      # step, so the attestation push failed with "No credentials found for registry ghcr.io".
+      # A real login here makes the credentials available to the step that follows.
+      - name: Registry login for attestation
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Attest
         if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@v1
