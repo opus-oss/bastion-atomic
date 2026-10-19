@@ -26,7 +26,7 @@ ARG KERNEL_SHA256=4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf
 ARG HARDENED_KEY=E240B57E2C4630BA768E2F26FC1B547C8D8172C8
 
 RUN dnf5 install -y --setopt=install_weak_deps=False \
-      gcc gcc-plugin-devel make flex bison bc perl-interpreter diffutils findutils hostname \
+      gcc gcc-c++ gcc-plugin-devel make flex bison bc perl-interpreter diffutils findutils hostname \
       elfutils-libelf-devel openssl openssl-devel xz patch gnupg2 kmod \
     && dnf5 clean all
 
