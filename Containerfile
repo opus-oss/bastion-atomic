@@ -9,6 +9,50 @@
 # that gets adopted deliberately instead of arriving overnight.
 ARG BASE=ghcr.io/secureblue/silverblue-main-hardened
 ARG TAG=latest
+
+# --- Kernel ------------------------------------------------------------------------------------
+# forge's device-only linux-hardened kernel from the NixOS build, with modules switched back on
+# and what Fedora Atomic needs added (kernel/fedora.config). Built in its own stage so the
+# compiler, the source tree and the throwaway module-signing key never reach the image: only
+# /out does.
+FROM quay.io/fedora/fedora:44 AS kernel
+ARG KERNEL_VERSION=6.18.56
+ARG HARDENED_VERSION=6.18.56-hardened1
+# Checked against Greg Kroah-Hartman's signature (647F28654894E3BD457199BE38DBBDC86092693E) when
+# pinned. To move to a newer 6.18: verify the new tarball's .tar.sign the same way, take its
+# sha256, and fetch the matching linux-hardened patch and .sig into kernel/.
+ARG KERNEL_SHA256=4633bbda2ab95eaf2a7af4041236451d6759c72e6946265531af4b3aacefbf89
+# linux-hardened's release key (Levente Polyak), in kernel/linux-hardened-signing-key.asc.
+ARG HARDENED_KEY=E240B57E2C4630BA768E2F26FC1B547C8D8172C8
+
+RUN dnf5 install -y --setopt=install_weak_deps=False \
+      gcc gcc-plugin-devel make flex bison bc perl-interpreter diffutils findutils hostname \
+      elfutils-libelf-devel openssl openssl-devel xz patch gnupg2 kmod \
+    && dnf5 clean all
+
+COPY kernel/ /build/kernel/
+WORKDIR /build
+RUN set -eux; \
+    curl -sSfLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"; \
+    echo "${KERNEL_SHA256}  linux-${KERNEL_VERSION}.tar.xz" | sha256sum -c; \
+    export GNUPGHOME="$(mktemp -d)"; \
+    gpg --batch --quiet --import kernel/linux-hardened-signing-key.asc; \
+    gpg --batch --status-fd 1 --verify "kernel/linux-hardened-v${HARDENED_VERSION}.patch.sig" \
+      "kernel/linux-hardened-v${HARDENED_VERSION}.patch" | grep -q "VALIDSIG ${HARDENED_KEY} "; \
+    tar -xf "linux-${KERNEL_VERSION}.tar.xz"; \
+    cd "linux-${KERNEL_VERSION}"; \
+    patch -s -p1 < "../kernel/linux-hardened-v${HARDENED_VERSION}.patch"; \
+    bash ../kernel/configure.sh . ../kernel/forge.config ../kernel/fedora.config; \
+    make -s -j"$(nproc)" bzImage modules; \
+    kver="$(make -s kernelrelease)"; \
+    # Strips, then signs every module with certs/signing_key.pem; the key stays in this stage.
+    make -s modules_install INSTALL_MOD_PATH=/out INSTALL_MOD_STRIP=1 DEPMOD=/bin/true; \
+    rm -f "/out/lib/modules/${kver}/build" "/out/lib/modules/${kver}/source"; \
+    cp arch/x86/boot/bzImage "/out/lib/modules/${kver}/vmlinuz"; \
+    cp .config "/out/lib/modules/${kver}/config"; \
+    cp System.map "/out/lib/modules/${kver}/System.map"
+
+# --- Image -------------------------------------------------------------------------------------
 FROM ${BASE}:${TAG}
 
 # DoH resolver, installed before the copy so files/etc/dnscrypt-proxy/dnscrypt-proxy.toml replaces
@@ -20,6 +64,34 @@ RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
 # lands where is obvious from the tree.
 COPY files/ /
+
+# Swap secureblue's kernel for the one built above. An ostree deployment boots whatever single
+# kernel is in /usr/lib/modules, with vmlinuz and initramfs.img beside its modules, so the old
+# packages go (--nodeps: kernel-tools and friends name them but work with any kernel; --noscripts:
+# their scriptlets call kernel-install, which has nothing to do in an image build) and the
+# initramfs is regenerated for the new one with secureblue's own dracut settings.
+COPY --from=kernel /out/lib/modules/ /usr/lib/modules/
+COPY kernel/initramfs-firmware.txt /tmp/initramfs-firmware.txt
+RUN set -eux; \
+    kver="$(ls /usr/lib/modules | grep -- '-bastion$')"; \
+    rpm -e --nodeps --noscripts $(rpm -qa --qf '%{NAME}\n' kernel kernel-core 'kernel-modules*'); \
+    for d in /usr/lib/modules/*; do [ "${d##*/}" = "$kver" ] || rm -rf "$d"; done; \
+    depmod -a "$kver"; \
+    # Built-in drivers probe before the root filesystem exists, so their firmware has to be in
+    # the initramfs. A missing file is a build error, not a black screen at the LUKS prompt.
+    fw=""; \
+    for f in $(grep -vE '^\s*(#|$)' /tmp/initramfs-firmware.txt); do \
+      found=""; \
+      for c in "/usr/lib/firmware/$f" "/usr/lib/firmware/$f.xz" "/usr/lib/firmware/$f.zst"; do \
+        [ -e "$c" ] && found="$c"; \
+      done; \
+      [ -n "$found" ] || { echo "firmware not found: $f" >&2; exit 1; }; \
+      fw="$fw $found"; \
+    done; \
+    rm /tmp/initramfs-firmware.txt; \
+    dracut --no-hostonly --kver "$kver" --reproducible --zstd --install "$fw" \
+      -f "/usr/lib/modules/$kver/initramfs.img"; \
+    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"
 
 RUN set -eux; \
     \
