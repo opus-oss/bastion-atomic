@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<style-scheme id="opus-dark" name="Opus Dark" version="1.0" kind="dark">
+  <color name="ground" value="#1b1e1f"/>
+  <color name="code" value="#141617"/>
+  <style name="text" foreground="#e7e4d9" background="#1b1e1f"/>
+  <style name="selection" background="#4a3a29"/>
+  <style name="current-line" background="#222627"/>
+  <style name="line-numbers" foreground="#828175" background="#1b1e1f"/>
+  <style name="cursor" foreground="#d98a3d"/>
+  <style name="bracket-match" foreground="#d98a3d" bold="true"/>
+  <style name="def:comment" foreground="#6f817b" italic="true"/>
+  <style name="def:keyword" foreground="#d0655c"/>
+  <style name="def:statement" foreground="#d0655c"/>
+  <style name="def:type" foreground="#8fa8c9"/>
+  <style name="def:function" foreground="#e6a15c"/>
+  <style name="def:string" foreground="#4bbfa6"/>
+  <style name="def:number" foreground="#4bbfa6"/>
+  <style name="def:constant" foreground="#4bbfa6"/>
+  <style name="def:identifier" foreground="#d98a3d"/>
+  <style name="def:preprocessor" foreground="#ab8fc0"/>
+  <style name="def:heading" foreground="#7cb5a4" bold="true"/>
+  <style name="def:error" foreground="#d0655c" underline="error"/>
+</style-scheme>

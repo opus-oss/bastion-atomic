@@ -12,8 +12,10 @@ ARG TAG=latest
 FROM ${BASE}:${TAG}
 
 # DoH resolver, installed before the copy so files/etc/dnscrypt-proxy/dnscrypt-proxy.toml replaces
-# the package's default rather than being set aside as .rpmnew.
-RUN dnf5 install -y dnscrypt-proxy && dnf5 clean all
+# the package's default rather than being set aside as .rpmnew. Then the Opus theme's fonts, and
+# adw-gtk3 so GTK3 apps take libadwaita's look and the Opus colours with it.
+RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw-gtk3-theme \
+    && dnf5 clean all
 
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
 # lands where is obvious from the tree.
@@ -52,6 +54,10 @@ RUN set -eux; \
     # app.slice ("No such process"), GDM's greeter included, so the first boot stopped at a
     # blinking cursor after the LUKS prompt. Fedora's GNOME runs the greeter as dynamic users
     # with their own systemd --user, which the NixOS build never had to accommodate.
+    \
+    # --- Opus theme ----------------------------------------------------------------------------
+    # Compile the GNOME defaults in /etc/dconf/db/local.d into the database dconf actually reads.
+    dconf update; \
     \
     # --- setuid ---------------------------------------------------------------------------------
     # The setuid bits this build does not need. Doing it at image build time is strictly better

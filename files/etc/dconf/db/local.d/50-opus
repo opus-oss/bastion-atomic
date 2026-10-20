@@ -1,0 +1,28 @@
+# GNOME in the Opus palette (opus-oss/obsidian-opus, "Prima Materia" dark), ported from the NixOS
+# build's hosts/common/opus-theme.nix. Defaults, not locks: Settings can still change any of it.
+# The libadwaita colours and the Ptyxis palette are per-user files; see /usr/share/opus-theme.
+
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='adw-gtk3-dark'
+accent-color='orange'
+font-name='Inter 11'
+document-font-name='Inter 11'
+monospace-font-name='JetBrains Mono 10'
+
+[org/gnome/desktop/background]
+picture-uri='file:///usr/share/backgrounds/opus/opus.svg'
+picture-uri-dark='file:///usr/share/backgrounds/opus/opus.svg'
+picture-options='zoom'
+primary-color='#1b1e1f'
+
+[org/gnome/desktop/screensaver]
+picture-uri='file:///usr/share/backgrounds/opus/opus.svg'
+primary-color='#1b1e1f'
+
+[org/gnome/TextEditor]
+style-scheme='opus-dark'
+
+[org/gnome/Ptyxis]
+font-name='JetBrains Mono 11'
+use-system-font=false
