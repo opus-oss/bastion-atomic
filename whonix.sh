@@ -32,7 +32,13 @@ ARCHIVE=Whonix-$FLAVOUR-$VERSION.Intel_AMD64.qcow2.libvirt.xz
 
 work=/var/lib/libvirt/whonix
 images=/var/lib/libvirt/images
-mkdir -p "$work" "$images"
+# 0711, as Fedora ships it: the qemu user has to be able to reach the disk images, and a plain
+# mkdir -p under secureblue's umask 077 would make the directory root-only (virt-manager then
+# fails with "Cannot access storage file ... Permission denied"). libvirt's dynamic ownership
+# hands each image to qemu while its machine runs.
+mkdir -p "$work"
+install -d -m 0711 "$images"
+chmod 0711 "$images"
 cd "$work"
 
 # A throwaway keyring, so root's own is never touched.
