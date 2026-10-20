@@ -16,12 +16,22 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: bastion-atomic
   REGISTRY: ghcr.io/${{ github.repository_owner }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Two images from one Containerfile: the generic one runs anywhere secureblue does, forge adds
+    # the device-only kernel for that one laptop. Same signing key, so the policy.json entry the
+    # generic image ships (ghcr.io/opus-oss) covers both.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: bastion-atomic
+            target: generic
+          - image: bastion-atomic-forge
+            target: forge
     permissions:
       contents: read
       # Needed to push to ghcr.io as GITHUB_TOKEN; no personal token or secret required.
@@ -45,11 +55,12 @@ jobs:
         id: build
         uses: redhat-actions/buildah-build@v2
         with:
-          image: ${{ env.IMAGE }}
+          image: ${{ matrix.image }}
           # latest plus the commit, so a bad image can be rolled back to a known good digest
           # rather than only to "whatever latest was yesterday".
           tags: latest ${{ github.sha }}
           containerfiles: ./Containerfile
+          extra-args: --target ${{ matrix.target }}
           oci: true
 
       # Pull requests build but must not publish: a fork opening a PR would otherwise overwrite
@@ -80,7 +91,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          subject-name: ${{ env.REGISTRY }}/${{ matrix.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
@@ -96,4 +107,4 @@ jobs:
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           COSIGN_PASSWORD: ""
-        run: cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+        run: cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ env.REGISTRY }}/${{ matrix.image }}@${{ steps.push.outputs.digest }}

@@ -29,6 +29,16 @@ Images build in CI and publish to ghcr.io; installs rebase onto them. Nothing is
 target machine, which is the point of an image-based system and the reason this cannot be done
 the way `update.sh` works on NixOS.
 
+Two images come out of the one Containerfile:
+
+| Image | Kernel | Runs on |
+| --- | --- | --- |
+| `ghcr.io/opus-oss/bastion-atomic` | secureblue's | anything secureblue supports |
+| `ghcr.io/opus-oss/bastion-atomic-forge` | forge's device-only linux-hardened (`kernel/`) | forge only: Framework 13 AMD 7040 |
+
+The forge kernel has drivers for that one laptop and nothing else, so it will not boot anywhere
+else. Both are signed with the same key.
+
 ## Feature mapping
 
 Each `hardened.*` option from the NixOS build, and where it lands here.
@@ -37,7 +47,7 @@ Each `hardened.*` option from the NixOS build, and where it lands here.
 | --- | --- | --- |
 | `apparmor` | SELinux, already enforcing and comprehensive | **replaced, better** |
 | `kernel` hardening params | secureblue sets most; delta in `files/` kargs | **mostly given** |
-| `kernel` device-only, no modules | needs a custom kernel in the image build; module-free unproven on ostree | **deferred** |
+| `kernel` device-only, no modules | forge's linux-hardened config built in the image (`kernel/`), with modules on and signed by a throwaway key | **ported, modules on** |
 | `attack-surface` USBGuard | secureblue ships it | **given** |
 | `attack-surface` blocked modules | `modprobe.d` drop-in in the image | port |
 | `attack-surface` no coredumps | `systemd/coredump.conf` drop-in | port |
@@ -83,7 +93,8 @@ files/                 everything dropped into the image
 ## Not yet decided
 
 - Which secureblue variant to base on (GNOME/Silverblue vs KDE/Kinoite).
-- Whether to attempt the module-free kernel at all, or accept Fedora's with hardened kargs.
+- Whether to take the kernel the rest of the way to module-free, now that the device-only
+  config is built with modules on.
 - Whether DoH comes from layered dnscrypt-proxy or resolved's own DoT, given TCP 853 is
   RST-filtered on at least one network this machine uses -- which is why NixOS ended up on
   dnscrypt-proxy over 443.
