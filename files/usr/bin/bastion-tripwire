@@ -111,6 +111,18 @@ def digest(p: Path) -> str:
     return f"{mode} sha256={h.hexdigest()}"
 
 
+def sha256_full(p: Path) -> str | None:
+    """The whole file's hash, whatever its size: boot images are far over MAX_HASH."""
+    h = hashlib.sha256()
+    try:
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
 def walk(base: Path, rel: str) -> list[str]:
     p = base / rel
     if not p.exists() and not p.is_symlink():
@@ -203,8 +215,11 @@ def sec_boot() -> tuple[list[str], list[str]]:
         mods = dep / "usr/lib/modules" / kver
         for key, shipped in (("linux", mods / "vmlinuz"), ("initrd", mods / "initramfs.img")):
             onboot = Path("/boot" + conf.get(key, "").strip())
-            a, b = digest(onboot), digest(shipped)
-            if a.split("sha256=")[-1] != b.split("sha256=")[-1]:
+            # Content only: ostree copies these into /boot with its own mode and mtime.
+            a, b = sha256_full(onboot), sha256_full(shipped)
+            if a is None or b is None:
+                rules.append(f"cannot read {onboot if a is None else shipped} to compare it")
+            elif a != b:
                 rules.append(f"{onboot} differs from the {shipped.name} its deployment shipped")
         opts = " ".join(sorted(o for o in conf.get("options", "").split() if not o.startswith("ostree=")))
         lines.append(f"entry-options {opts}")
