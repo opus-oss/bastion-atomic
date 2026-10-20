@@ -52,6 +52,11 @@ python3 -I -c 'import json; p = "/etc/containers/policy.json"; d = json.load(ope
 # also means anyone who can write to the registry can write to your laptop.
 rpm-ostree rebase "ostree-image-signed:docker://$IMAGE"
 
+# The image's kargs.d asks for plymouth.enable=0, but rpm-ostree has been seen not to apply a
+# newly added kargs.d file to the staged deployment, so set it directly as well. It is a no-op
+# if it is already there, and carries over to later upgrades.
+rpm-ostree kargs --append-if-missing=plymouth.enable=0 >/dev/null
+
 cat <<'EOF'
 
 Done. Reboot to use it.
