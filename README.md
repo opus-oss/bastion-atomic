@@ -42,7 +42,7 @@ Each `hardened.*` option from the NixOS build, and where it lands here.
 | `attack-surface` blocked modules | `modprobe.d` drop-in in the image | port |
 | `attack-surface` no coredumps | `systemd/coredump.conf` drop-in | port |
 | `attack-surface` DoH | dnscrypt-proxy layered, or resolved DoT | port |
-| `attack-surface` hidepid | `systemd` mount unit for `/proc` | port |
+| `attack-surface` hidepid | dropped: remounting `/proc` with hidepid=2 stopped GDM's greeter from starting | **not ported** |
 | `attack-surface` minimalSetuid | image build strips bits; `/usr` is immutable so it sticks | port, easier here |
 | `firewall` nftables | disable firewalld, drop in the existing ruleset | port, direct |
 | `timesync` HTTPS time | `pkgs/timesync/bastion_timesync.py` runs as-is; ship as a systemd unit | port, direct |
@@ -77,7 +77,7 @@ files/                 everything dropped into the image
   etc/modprobe.d/      blocked modules
   etc/sysctl.d/        the sysctl set from modules/kernel.nix
   etc/nftables/        the firewall ruleset
-  usr/lib/systemd/     timesync, killswitch, hidepid units
+  usr/lib/systemd/     timesync and firewall units
 ```
 
 ## Not yet decided

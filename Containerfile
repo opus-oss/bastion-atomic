@@ -47,7 +47,11 @@ RUN set -eux; \
     systemctl disable chronyd.service || true; \
     systemctl disable systemd-timesyncd.service || true; \
     systemctl enable bastion-timesync.timer; \
-    systemctl enable proc-hidepid.service; \
+    \
+    # No hidepid. Remounting /proc with hidepid=2 left every user manager unable to load
+    # app.slice ("No such process"), GDM's greeter included, so the first boot stopped at a
+    # blinking cursor after the LUKS prompt. Fedora's GNOME runs the greeter as dynamic users
+    # with their own systemd --user, which the NixOS build never had to accommodate.
     \
     # --- setuid ---------------------------------------------------------------------------------
     # The setuid bits this build does not need. Doing it at image build time is strictly better
