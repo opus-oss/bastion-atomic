@@ -1,0 +1,33 @@
+#!/usr/bin/bash
+# Desktop side of the persistence tripwire: turn the root check's status file into a notification.
+# Runs as the logged-in user; it can read the one-line status, never the report or baseline.
+set -u
+status=/var/lib/bastion-tripwire/status
+seen=${XDG_STATE_HOME:-$HOME/.local/state}/bastion-tripwire/notified
+
+notify() { notify-send --urgency=critical --app-name="Tripwire" --icon=dialog-warning "$1" "$2"; }
+
+if [[ ! -r $status ]]; then
+  # Nothing yet is normal for the first minutes after the first boot; days of nothing is not.
+  if [[ $(cut -d. -f1 /proc/uptime) -gt 86400 ]]; then
+    notify "Persistence tripwire has no status" "The root check has not run. Check: systemctl status bastion-tripwire.timer"
+  fi
+  exit 0
+fi
+
+line=$(<"$status")
+# A status that has not been refreshed in two days means the root check stopped running.
+age=$(( $(date +%s) - $(stat -c %Y "$status") ))
+if (( age > 2 * 86400 )); then
+  notify "Persistence tripwire is stale" "Last check was $((age / 86400)) days ago. Check: systemctl status bastion-tripwire.timer"
+fi
+
+[[ $line == alert* ]] || exit 0
+mkdir -p "$(dirname "$seen")"
+# One notification per check result, not one every quarter hour.
+[[ -f $seen && $(<"$seen") == "$line" ]] && exit 0
+rules=$(grep -oP 'rules=\K[0-9]+' <<<"$line")
+changes=$(grep -oP 'changes=\K[0-9]+' <<<"$line")
+notify "Persistence tripwire: something changed" \
+  "${rules:-0} rule violation(s), ${changes:-0} change(s) since the baseline. Review with:  run0 bastion-tripwire diff"
+printf '%s\n' "$line" > "$seen"

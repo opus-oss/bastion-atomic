@@ -136,6 +136,11 @@ RUN set -eux; \
     # Compile the GNOME defaults in /etc/dconf/db/local.d into the database dconf actually reads.
     dconf update; \
     \
+    # --- Persistence tripwire --------------------------------------------------------------------
+    # Root check after boot and daily; a per-user timer turns its findings into a notification.
+    systemctl enable bastion-tripwire.timer; \
+    systemctl --global enable bastion-tripwire-notify.timer; \
+    \
     # --- setuid ---------------------------------------------------------------------------------
     # The setuid bits this build does not need. Doing it at image build time is strictly better
     # than the NixOS equivalent: /usr is immutable at runtime, so nothing can put them back, and

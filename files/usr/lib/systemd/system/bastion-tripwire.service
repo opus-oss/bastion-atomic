@@ -1,0 +1,23 @@
+# The persistence tripwire's root check. The program is in /usr, so it is part of the signed image
+# and cannot be edited on this machine; its baseline is in /var/lib/bastion-tripwire, root only.
+[Unit]
+Description=Check persistence locations against the tripwire baseline
+After=local-fs.target rpm-ostreed.service
+Wants=rpm-ostreed.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bastion-tripwire check
+StateDirectory=bastion-tripwire
+StateDirectoryMode=0711
+# It only reads; the state directory is the one place it writes.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+RestrictRealtime=yes
+LockPersonality=yes
+Nice=10
+IOSchedulingClass=idle

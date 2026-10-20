@@ -26,6 +26,13 @@ What changes, compared with stock secureblue:
 - **The clock comes from HTTPS servers**, not NTP.
 - Extra kernel sysctls, blocked kernel modules, and no setuid on `su`, `newgrp`, `sg`, `pkexec`.
 - The Opus GNOME theme, a text-only boot, and no logo on the login screen.
+- **A persistence tripwire.** `/usr` is the signed image and read-only, so anything that survives
+  a reboot lives in `/etc`, `/var`, `/boot`, the firmware boot entries or a home directory.
+  `bastion-tripwire` (in the image, run as root after boot and daily) records those places, flags
+  what is wrong outright (SELinux off, an unsigned origin, `/boot` files that are not what the
+  deployment shipped, setuid files outside `/usr`) and reports every change since the baseline as
+  a desktop notification. `run0 bastion-tripwire diff` shows them; `run0 bastion-tripwire accept`
+  takes the current state as the new baseline.
 
 `bastion-atomic-forge` is not for other machines: its kernel only has drivers for one Framework
 13 AMD 7040, and it will not boot anywhere else.

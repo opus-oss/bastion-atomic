@@ -1,0 +1,6 @@
+[Unit]
+Description=Show persistence tripwire findings on the desktop
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bastion-tripwire-notify

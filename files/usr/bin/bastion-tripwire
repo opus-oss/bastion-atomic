@@ -1,0 +1,410 @@
+#!/usr/bin/python3 -I
+"""Persistence tripwire for bastion-atomic.
+
+Everything under /usr is the signed image, read-only at runtime and replaced whole on every
+update, so anything that survives a reboot has to live somewhere writable: /etc, /var, /boot, the
+firmware's boot entries, or a home directory. This records those places and reports when they
+change.
+
+Two kinds of findings:
+  * rules  -- conditions that are wrong whatever the baseline says (SELinux off, an unsigned
+              origin, boot files that are not the ones the deployment shipped, setuid files
+              outside /usr, ...). Always reported.
+  * changes -- differences from the baseline taken by `accept`. Reported until accepted.
+
+    bastion-tripwire check     snapshot, compare, write the report and status (the timer runs this)
+    bastion-tripwire diff      print the last report
+    bastion-tripwire accept    make the current state the baseline, after reviewing `diff`
+
+Run as root for the full picture (run0 bastion-tripwire ...). As an ordinary user it only looks at
+that user's own home, which is useful for testing and little else.
+"""
+
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import os
+import pwd
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+STATE = Path(os.environ.get("BASTION_TRIPWIRE_DIR", "/var/lib/bastion-tripwire"))
+ROOT = os.geteuid() == 0
+MAX_HASH = 16 * 1024 * 1024  # bigger files are recorded by size and mtime instead
+
+# /etc files that change on their own in normal operation. They are still covered by the image
+# (if they come from it) or are regenerated state; alerting on them would only teach you to
+# ignore the alerts.
+ETC_NOISE = re.compile(
+    r"^(adjtime|ld\.so\.cache|\.updated|\.pwd\.lock|machine-info|udev/hwdb\.bin"
+    r"|pki/ca-trust/extracted/.*|lvm/(archive|backup)/.*|dconf/db/[^/]+$|selinux/targeted/active/.*"
+    r"|selinux/targeted/contexts/files/file_contexts\.local\.bin|subuid-|subgid-|passwd-|group-|shadow-|gshadow-"
+    r"|NetworkManager/system-connections/.*\.nmmeta|libvirt/qemu/autostart/?.*|resolv\.conf)$"
+)
+
+# What secureblue's hardened_malloc toggle writes to /etc/ld.so.preload.
+PRELOAD_OK = {"libhardened_malloc.so", "libhardened_malloc-light.so", "libhardened_malloc-pkey.so",
+              "libhardened_malloc-light-pkey.so", "libno_rlimit_as.so"}
+
+# Per-user places a program can make itself start again. Directories are walked.
+HOME_PATHS = [
+    ".bashrc", ".bash_profile", ".bash_login", ".profile", ".bash_logout", ".zshrc", ".zprofile",
+    ".zshenv", ".zlogin", ".config/fish", ".pam_environment", ".xprofile", ".xinitrc", ".xsession",
+    ".config/autostart", ".config/systemd/user", ".local/share/systemd/user",
+    ".config/environment.d", ".config/containers/systemd", ".config/containers/containers.conf",
+    ".ssh/authorized_keys", ".ssh/authorized_keys2", ".ssh/config", ".ssh/rc", ".ssh/environment",
+    ".gnupg/gpg-agent.conf", ".gnupg/gpg.conf", ".gitconfig", ".config/git",
+    ".local/bin", "bin", ".local/share/applications", ".config/mimeapps.list",
+    ".local/share/gnome-shell/extensions", ".local/share/flatpak/overrides",
+    ".claude/settings.json", ".claude/settings.local.json",
+]
+# dconf keys that hold commands or code to load.
+DCONF_PATHS = [
+    "/org/gnome/settings-daemon/plugins/media-keys/",
+    "/org/gnome/shell/",
+    "/org/gnome/Ptyxis/",
+]
+
+
+def run(cmd: list[str], timeout: int = 60, user: str | None = None) -> str:
+    if user and ROOT:
+        # setpriv, not runuser: no PAM session, which would want to write under the read-only
+        # filesystem the service runs with.
+        pw = pwd.getpwnam(user)
+        cmd = ["setpriv", f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}", "--init-groups", "--",
+               "env", "-i", f"HOME={pw.pw_dir}", f"USER={user}", "PATH=/usr/bin:/bin",
+               f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}", *cmd]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"<{cmd[0]}: {e}>"
+    return r.stdout
+
+
+def digest(p: Path) -> str:
+    try:
+        st = p.lstat()
+    except OSError as e:
+        return f"unreadable ({e.strerror})"
+    if stat.S_ISLNK(st.st_mode):
+        return "-> " + os.readlink(p)
+    mode = f"{stat.S_IMODE(st.st_mode):04o} {st.st_uid}:{st.st_gid}"
+    if not stat.S_ISREG(st.st_mode):
+        return f"{stat.filemode(st.st_mode)} {mode}"
+    if st.st_size > MAX_HASH:
+        return f"{mode} size={st.st_size} mtime={int(st.st_mtime)}"
+    h = hashlib.sha256()
+    try:
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as e:
+        return f"{mode} unreadable ({e.strerror})"
+    return f"{mode} sha256={h.hexdigest()}"
+
+
+def walk(base: Path, rel: str) -> list[str]:
+    p = base / rel
+    if not p.exists() and not p.is_symlink():
+        return []
+    if p.is_dir() and not p.is_symlink():
+        out = []
+        for d, dirs, files in os.walk(p, followlinks=False):
+            dirs.sort()
+            for name in sorted(files) + [x for x in dirs if (Path(d) / x).is_symlink()]:
+                f = Path(d) / name
+                out.append(f"{f.relative_to(base)} {digest(f)}")
+        return out or [f"{rel}/ (empty dir)"]
+    return [f"{rel} {digest(p)}"]
+
+
+# --- sections -------------------------------------------------------------------------------------
+# Each returns (lines to baseline, rule violations).
+
+
+def sec_deployment() -> tuple[list[str], list[str]]:
+    lines, rules = [], []
+    try:
+        st = json.loads(run(["rpm-ostree", "status", "--json"]))
+    except json.JSONDecodeError:
+        return ["<rpm-ostree status unavailable>"], []
+    for d in st.get("deployments", []):
+        if not d.get("booted"):
+            continue
+        ref = d.get("container-image-reference", "")
+        lines.append(f"origin {ref}")
+        if not ref.startswith("ostree-image-signed:docker://ghcr.io/opus-oss/"):
+            rules.append(f"booted from an image not signed by the opus-oss key: {ref}")
+        for key in ("requested-packages", "requested-local-packages", "base-removals",
+                    "base-local-replacements", "requested-base-removals"):
+            for pkg in d.get(key) or []:
+                name = pkg if isinstance(pkg, str) else pkg.get("nevra", str(pkg))
+                lines.append(f"{key} {name}")
+                rules.append(f"package layered on top of the image ({key}): {name}")
+        if d.get("unlocked", "none") not in ("none", None):
+            rules.append(f"/usr is unlocked for writing ({d['unlocked']})")
+    return lines, rules
+
+
+def sec_kernel() -> tuple[list[str], list[str]]:
+    lines, rules = [], []
+    skip = re.compile(r"^(BOOT_IMAGE|ostree)=")
+    for a in sorted(set(Path("/proc/cmdline").read_text().split())):
+        if not skip.match(a):
+            lines.append(f"karg {a}")
+    for name, want in (("/sys/fs/selinux/enforce", "1"),):
+        try:
+            if Path(name).read_text().strip() != want:
+                rules.append("SELinux is not enforcing")
+        except OSError:
+            rules.append("SELinux is not running")
+    try:
+        if "[confidentiality]" not in Path("/sys/kernel/security/lockdown").read_text():
+            rules.append("kernel lockdown is below confidentiality")
+    except OSError:
+        pass
+    # ld.so.preload forces a library into every program. secureblue uses it for hardened_malloc;
+    # anything else in it, or a name that resolves outside the read-only /usr, is an implant.
+    preload = Path("/etc/ld.so.preload")
+    if preload.exists():
+        for lib in preload.read_text().split():
+            lines.append(f"preload {lib}")
+            found = [d for d in ("/usr/lib64", "/usr/lib") if (Path(d) / lib).is_file()]
+            if lib not in PRELOAD_OK or not found or "/" in lib:
+                rules.append(f"/etc/ld.so.preload loads {lib}, which is not secureblue's hardened_malloc set")
+    return lines, rules
+
+
+def sec_boot() -> tuple[list[str], list[str]]:
+    """/boot is unencrypted and outside the image, so check its contents against the deployments."""
+    lines, rules = [], []
+    entries = Path("/boot/loader/entries")
+    for e in sorted(entries.glob("*.conf")) if entries.is_dir() else []:
+        conf = dict(l.split(None, 1) for l in e.read_text().splitlines() if " " in l.strip())
+        m = re.search(r"ostree=(\S+)", conf.get("options", ""))
+        if not m:
+            rules.append(f"boot entry {e.name} does not boot an ostree deployment")
+            continue
+        dep = Path("/sysroot" + m.group(1)) if not Path(m.group(1)).exists() else Path(m.group(1))
+        try:
+            dep = dep.resolve(strict=True)
+        except OSError:
+            rules.append(f"boot entry {e.name} points at a missing deployment {m.group(1)}")
+            continue
+        kver = Path(conf.get("linux", "")).name.removeprefix("vmlinuz-")
+        mods = dep / "usr/lib/modules" / kver
+        for key, shipped in (("linux", mods / "vmlinuz"), ("initrd", mods / "initramfs.img")):
+            onboot = Path("/boot" + conf.get(key, "").strip())
+            a, b = digest(onboot), digest(shipped)
+            if a.split("sha256=")[-1] != b.split("sha256=")[-1]:
+                rules.append(f"{onboot} differs from the {shipped.name} its deployment shipped")
+        opts = " ".join(sorted(o for o in conf.get("options", "").split() if not o.startswith("ostree=")))
+        lines.append(f"entry-options {opts}")
+    for f in ("/boot/grub2/grub.cfg", "/boot/grub2/user.cfg"):
+        lines += walk(Path("/"), f.lstrip("/"))
+    lines += walk(Path("/"), "boot/efi/EFI")
+    efi = run(["efibootmgr"]) if Path("/usr/bin/efibootmgr").exists() else ""
+    lines += [f"efi {l}" for l in efi.splitlines() if l.startswith(("Boot", "BootOrder")) and not l.startswith("BootCurrent")]
+    return lines, rules
+
+
+def sec_etc() -> tuple[list[str], list[str]]:
+    lines = []
+    for l in run(["ostree", "admin", "config-diff"], timeout=120).splitlines():
+        kind, _, path = l.strip().partition(" ")
+        path = path.strip()
+        if not path or ETC_NOISE.match(path):
+            continue
+        p = Path("/etc") / path
+        lines.append(f"{kind} /etc/{path} {digest(p) if kind != 'D' else ''}".rstrip())
+    return lines, []
+
+
+def sec_var() -> tuple[list[str], list[str]]:
+    lines = []
+    for rel in ("var/spool/cron", "var/spool/at", "var/lib/extensions", "var/lib/confexts",
+                "var/lib/portables", "etc/extensions", "var/lib/flatpak/overrides", "var/lib/flatpak/repo/config"):
+        lines += walk(Path("/"), rel)
+    lines += [f"flatpak-system {l}" for l in sorted(run(["flatpak", "list", "--system", "--columns=application,origin,arch,branch"]).splitlines())]
+    lines += [f"flatpak-remote {l}" for l in sorted(run(["flatpak", "remotes", "--system", "--columns=name,url"]).splitlines())]
+    return lines, []
+
+
+def sec_setuid() -> tuple[list[str], list[str]]:
+    lines, rules = [], []
+    for top in ("/etc", "/var", "/var/home", "/boot"):
+        dev = os.lstat(top).st_dev
+        for d, dirs, files in os.walk(top):
+            dirs[:] = [x for x in dirs if os.lstat(os.path.join(d, x)).st_dev == dev]
+            for name in files:
+                p = os.path.join(d, name)
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode) and st.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                    lines.append(f"setid {p}")
+                    rules.append(f"setuid/setgid file outside /usr: {p}")
+    return sorted(set(lines)), sorted(set(rules))
+
+
+def sec_accounts() -> tuple[list[str], list[str]]:
+    lines, rules = [], []
+    for pw in pwd.getpwall():
+        if pw.pw_uid == 0 and pw.pw_name != "root":
+            rules.append(f"second root account: {pw.pw_name}")
+        if pw.pw_uid == 0 or not pw.pw_shell.endswith(("nologin", "false")):
+            lines.append(f"login {pw.pw_name} uid={pw.pw_uid} shell={pw.pw_shell} home={pw.pw_dir}")
+    for g in ("wheel", "libvirt", "kvm", "docker", "adm", "systemd-journal"):
+        try:
+            import grp
+            lines.append(f"group {g}: {','.join(sorted(grp.getgrnam(g).gr_mem))}")
+        except KeyError:
+            pass
+    return lines, rules
+
+
+def sec_network() -> tuple[list[str], list[str]]:
+    lines = []
+    for l in run(["ss", "-H", "-ltnp"]).splitlines() + run(["ss", "-H", "-lunp"]).splitlines():
+        f = l.split()
+        if len(f) < 5:
+            continue
+        local = f[3]
+        proc = re.findall(r'\("([^"]+)"', l)
+        if l.startswith("UNCONN") and re.match(r"^(127\.|\[::1\]|\[?::ffff:127\.)", local):
+            continue  # loopback-only UDP: dnscrypt-proxy, the Whonix pair, and the like
+        # Port numbers of client-side UDP sockets are random; keep the address family and owner.
+        port = local.rsplit(":", 1)[-1]
+        if l.startswith("UNCONN") and port.isdigit() and int(port) >= 32768:
+            local = local.rsplit(":", 1)[0] + ":ephemeral"
+        lines.append(f"listen {f[0] if not l.startswith(('LISTEN', 'UNCONN')) else ('tcp' if l.startswith('LISTEN') else 'udp')} {local} {','.join(sorted(set(proc)))}")
+    nft = run(["nft", "list", "table", "inet", "bastion"]) if ROOT else ""
+    if nft:
+        lines.append("nft-bastion sha256=" + hashlib.sha256(nft.encode()).hexdigest())
+    return sorted(set(lines)), []
+
+
+def sec_homes() -> tuple[list[str], list[str]]:
+    lines = []
+    users = [p for p in pwd.getpwall() if p.pw_uid >= 1000 and p.pw_dir.startswith(("/var/home/", "/home/"))
+             and Path(p.pw_dir).is_dir()] if ROOT else [pwd.getpwuid(os.getuid())]
+    for pw in users:
+        home = Path(os.path.realpath(pw.pw_dir))
+        for rel in HOME_PATHS:
+            lines += [f"{pw.pw_name}:~/{l}" for l in walk(home, rel)]
+        for path in DCONF_PATHS:
+            dump = run(["dconf", "dump", path], user=pw.pw_name if ROOT else None)
+            # Window sizes and the like churn; only keys that name commands, code or extensions.
+            keep = [l for l in dump.splitlines()
+                    if l.startswith("[") or re.match(r"^(command|binding|name|enabled-extensions|disabled-extensions|custom-keybindings|custom-command|use-custom-command|development-tools)=", l)]
+            lines += [f"{pw.pw_name}:dconf{path} {l}" for l in keep]
+        apps = run(["flatpak", "list", "--user", "--columns=application,origin,branch"], user=pw.pw_name if ROOT else None)
+        lines += [f"{pw.pw_name}:flatpak {l}" for l in sorted(apps.splitlines())]
+        cron = Path("/var/spool/cron") / pw.pw_name
+        if cron.exists():
+            lines.append(f"{pw.pw_name}:crontab {digest(cron)}")
+    return lines, []
+
+
+SECTIONS = {
+    "deployment": (sec_deployment, True),
+    "kernel": (sec_kernel, False),
+    "boot": (sec_boot, True),
+    "etc": (sec_etc, True),
+    "var": (sec_var, True),
+    "setuid": (sec_setuid, True),
+    "accounts": (sec_accounts, False),
+    "network": (sec_network, False),
+    "homes": (sec_homes, False),
+}
+
+
+def snapshot() -> tuple[dict[str, list[str]], list[str]]:
+    snap, rules = {}, []
+    for name, (fn, needs_root) in SECTIONS.items():
+        if needs_root and not ROOT:
+            continue
+        try:
+            lines, r = fn()
+        except Exception as e:  # one broken section must not hide the others
+            lines, r = [f"<section failed: {type(e).__name__}: {e}>"], []
+        snap[name] = sorted(set(lines))
+        rules += [f"[{name}] {x}" for x in r]
+    return snap, rules
+
+
+def compare(base: dict[str, list[str]], now: dict[str, list[str]]) -> list[str]:
+    out = []
+    for sec in now:
+        old, new = set(base.get(sec, [])), set(now[sec])
+        for l in sorted(new - old):
+            out.append(f"[{sec}] + {l}")
+        for l in sorted(old - new):
+            out.append(f"[{sec}] - {l}")
+    return out
+
+
+def write(path: Path, text: str, mode: int) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(text)
+    tmp.chmod(mode)
+    tmp.replace(path)
+
+
+def main() -> int:
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if ROOT:
+        STATE.chmod(0o711)  # the status file is readable by the desktop notifier; nothing else is
+    baseline = STATE / "baseline.json"
+    report = STATE / "report.txt"
+    status = STATE / "status"
+    now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+    if cmd == "diff":
+        print(report.read_text() if report.exists() else "No report yet; run check first.")
+        return 0
+    if cmd not in ("check", "accept"):
+        print(__doc__)
+        return 2
+
+    snap, rules = snapshot()
+    if cmd == "accept" or not baseline.exists():
+        write(baseline, json.dumps(snap, indent=1), 0o600)
+        first = cmd != "accept"
+        msg = f"{now} baseline {'created' if first else 'accepted'} ({sum(map(len, snap.values()))} entries)"
+        print(msg)
+        if not rules:
+            write(report, msg + "\n", 0o600)
+            write(status, f"ok {now}\n", 0o644)
+            return 0
+    changes = compare(json.loads(baseline.read_text()), snap)
+
+    body = [f"bastion-tripwire report, {now}", ""]
+    if rules:
+        body += ["RULE VIOLATIONS (wrong whatever the baseline says):"] + [f"  ! {r}" for r in rules] + [""]
+    if changes:
+        body += ["CHANGES since the baseline (+ new, - gone):"] + [f"  {c}" for c in changes] + [""]
+        body += ["If every change is expected, make this the new baseline:  run0 bastion-tripwire accept"]
+    if not rules and not changes:
+        body += ["Nothing changed since the baseline."]
+    text = "\n".join(body) + "\n"
+    write(report, text, 0o600)
+    n = len(rules) + len(changes)
+    write(status, (f"alert {now} rules={len(rules)} changes={len(changes)}\n" if n else f"ok {now}\n"), 0o644)
+    for r in rules:
+        print(f"RULE: {r}", file=sys.stderr)
+    for c in changes:
+        print(f"CHANGE: {c}", file=sys.stderr)
+    print(f"{n} finding(s); report in {report}" if n else "no findings")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

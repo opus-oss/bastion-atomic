@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the persistence tripwire after boot and daily
+
+[Timer]
+# After boot, to catch anything planted while the machine was off or by the previous session.
+OnBootSec=3min
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
