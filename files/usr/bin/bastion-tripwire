@@ -62,6 +62,9 @@ HOME_PATHS = [
     ".local/bin", "bin", ".local/share/applications", ".config/mimeapps.list",
     ".local/share/gnome-shell/extensions", ".local/share/flatpak/overrides",
     ".claude/settings.json", ".claude/settings.local.json",
+    # Started on demand rather than at login, which makes them easy to overlook.
+    ".local/share/dbus-1/services", ".local/share/nautilus/scripts", ".local/share/thumbnailers",
+    ".config/user-tmpfiles.d",
 ]
 # dconf keys that hold commands or code to load.
 DCONF_PATHS = [
@@ -227,6 +230,14 @@ def sec_etc() -> tuple[list[str], list[str]]:
 
 def sec_var() -> tuple[list[str], list[str]]:
     lines = []
+    # /usr/local and /opt are symlinks into /var on Fedora Atomic, and /usr/local/bin comes before
+    # /usr/bin in PATH: the one place a writable file can shadow a command from the image.
+    for rel in ("var/usrlocal", "var/opt"):
+        lines += walk(Path("/"), rel)
+    # Lingering users get their user services started at boot, logged in or not.
+    lines += walk(Path("/"), "var/lib/systemd/linger")
+    # Old-style polkit authority files are read from /var as well as /etc.
+    lines += walk(Path("/"), "var/lib/polkit-1")
     for rel in ("var/spool/cron", "var/spool/at", "var/lib/extensions", "var/lib/confexts",
                 "var/lib/portables", "etc/extensions", "var/lib/flatpak/overrides", "var/lib/flatpak/repo/config"):
         lines += walk(Path("/"), rel)
@@ -284,6 +295,12 @@ def sec_network() -> tuple[list[str], list[str]]:
         if l.startswith("UNCONN") and port.isdigit() and int(port) >= 32768:
             local = local.rsplit(":", 1)[0] + ":ephemeral"
         lines.append(f"listen {f[0] if not l.startswith(('LISTEN', 'UNCONN')) else ('tcp' if l.startswith('LISTEN') else 'udp')} {local} {','.join(sorted(set(proc)))}")
+    # Built-in drivers never show here, so what does is loaded on demand: new entries mean new
+    # hardware or something asking the kernel for code.
+    try:
+        lines += [f"module {l.split()[0]}" for l in Path("/proc/modules").read_text().splitlines()]
+    except OSError:
+        pass
     nft = run(["nft", "list", "table", "inet", "bastion"]) if ROOT else ""
     if nft:
         lines.append("nft-bastion sha256=" + hashlib.sha256(nft.encode()).hexdigest())
@@ -306,6 +323,9 @@ def sec_homes() -> tuple[list[str], list[str]]:
             lines += [f"{pw.pw_name}:dconf{path} {l}" for l in keep]
         apps = run(["flatpak", "list", "--user", "--columns=application,origin,branch"], user=pw.pw_name if ROOT else None)
         lines += [f"{pw.pw_name}:flatpak {l}" for l in sorted(apps.splitlines())]
+        for site in sorted(home.glob(".local/lib/python*/site-packages")):
+            for pth in sorted(site.glob("*.pth")) + sorted(site.glob("sitecustomize.py")) + sorted(site.glob("usercustomize.py")):
+                lines.append(f"{pw.pw_name}:~/{pth.relative_to(home)} {digest(pth)}")
         cron = Path("/var/spool/cron") / pw.pw_name
         if cron.exists():
             lines.append(f"{pw.pw_name}:crontab {digest(cron)}")
