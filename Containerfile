@@ -91,7 +91,16 @@ RUN set -eux; \
     rm /tmp/initramfs-firmware.txt; \
     dracut --no-hostonly --kver "$kver" --reproducible --zstd --install "$fw" \
       -f "/usr/lib/modules/$kver/initramfs.img"; \
-    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"
+    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
+    # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that
+    # what this machine cannot boot without made it in: the firmware, the LUKS unlock, and the
+    # step that mounts the ostree deployment.
+    lsinitrd -m "/usr/lib/modules/$kver/initramfs.img"; \
+    lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initramfs.list; \
+    for want in $fw /usr/lib/systemd/systemd-cryptsetup /usr/lib/ostree/ostree-prepare-root; do \
+      grep -qF " ${want#/}" /tmp/initramfs.list || { echo "missing from initramfs: $want" >&2; exit 1; }; \
+    done; \
+    rm /tmp/initramfs.list
 
 RUN set -eux; \
     \
