@@ -156,7 +156,9 @@ RUN set -eux; \
     # --add ostree: the module only includes itself on request (check() returns 255), and without
     # ostree-prepare-root the initramfs cannot mount the deployment. rpm-ostree asks for it when it
     # builds an initramfs; a hand-run dracut has to ask too.
-    dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree --install "$fw" \
+    # --omit plymouth: plymouth.enable=0 (kargs.d) turns it off anyway; leaving it out of the
+    # initramfs keeps the image smaller and the LUKS prompt on the text console.
+    dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree --omit plymouth --install "$fw" \
       -f "/usr/lib/modules/$kver/initramfs.img"; \
     chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
     # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that

@@ -1,0 +1,5 @@
+# Applied on top of secureblue's 10-secureblue.toml when a deployment is made from this image.
+#
+# No Plymouth: no splash, no graphical LUKS prompt. systemd asks for the passphrase on the text
+# console instead, and the ~3.4s plymouth-quit-wait held up the desktop goes with it.
+kargs = ["plymouth.enable=0"]

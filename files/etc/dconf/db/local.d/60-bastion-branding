@@ -1,0 +1,6 @@
+# No logo on the login screen. secureblue-logos puts its mark at the path the gschema override
+# points GDM at; an empty logo here wins over that default, and GDM's dconf profile includes the
+# local database.
+
+[org/gnome/login-screen]
+logo=''
