@@ -2,6 +2,34 @@
 
 Bastion's hardening, rebuilt on Fedora Atomic instead of NixOS.
 
+## Install
+
+On a freshly installed [secureblue](https://secureblue.dev) (GNOME / Silverblue variant):
+
+```
+git clone https://github.com/opus-oss/bastion-atomic.git
+cd bastion-atomic
+run0 bash install.sh
+```
+
+It trusts this repo's signing key, then rebases onto `ghcr.io/opus-oss/bastion-atomic:latest`,
+the generic image, which runs anywhere secureblue does. Reboot afterwards. The secureblue you
+were on stays in the boot menu as the way back. Updates arrive nightly as normal
+`rpm-ostree upgrade`s.
+
+What changes, compared with stock secureblue:
+
+- **Nothing gets in.** The firewall drops all inbound connections and forwards nothing (except
+  for libvirt VMs), so file sharing, casting and remote access need a rule first.
+- **DNS only over HTTPS** (Quad9, Cloudflare, Mullvad). Plaintext DNS is rejected, so
+  captive-portal Wi-Fi (hotels, airports) cannot show its login page.
+- **The clock comes from HTTPS servers**, not NTP.
+- Extra kernel sysctls, blocked kernel modules, and no setuid on `su`, `newgrp`, `sg`, `pkexec`.
+- The Opus GNOME theme, a text-only boot, and no logo on the login screen.
+
+`bastion-atomic-forge` is not for other machines: its kernel only has drivers for one Framework
+13 AMD 7040, and it will not boot anywhere else.
+
 ## Why
 
 The NixOS build works and is measured: a device-only kernel with no module loader (7,297 modules

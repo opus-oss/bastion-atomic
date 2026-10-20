@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Point an existing Fedora Atomic install at this image.   sudo ./install.sh
+# Point an existing secureblue install at this image.   run0 bash install.sh
 #
-# Run this on a freshly installed secureblue (or any Fedora Atomic) machine. It does not install
+# Run this from a clone of this repo, on a freshly installed secureblue machine. It does not install
 # an operating system and it does not touch your disks -- it tells the system to boot a different
 # image from the next reboot, and leaves the one you are on in the boot menu as the way back.
 #
@@ -9,7 +9,8 @@
 # this machine. The image is built in CI and downloaded whole, so switching is a pull, not a
 # rebuild.
 set -euo pipefail
-[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "run with: run0 bash $0" >&2; exit 1; }
+repo=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 IMAGE=${IMAGE:-ghcr.io/opus-oss/bastion-atomic:latest}
 
@@ -36,6 +37,16 @@ read -r -p "Continue? [y/N] " reply
 [[ ${reply,,} == y ]] || { echo "Nothing changed."; exit 0; }
 
 echo "== Rebasing (downloads the image; several minutes)"
+# The machine has to trust this repo's signing key before the first pull: secureblue's
+# policy.json rejects every image it has no key for, which is why a bare signed rebase fails on a
+# fresh install. The same three pieces the image itself ships, so after the first boot they come
+# from the image and track it.
+echo "== Trusting this repo's signing key"
+install -m 0644 "$repo/cosign.pub" /etc/pki/containers/opus-oss.pub
+install -m 0644 "$repo/files/etc/containers/registries.d/opus-oss.yaml" /etc/containers/registries.d/opus-oss.yaml
+cp -n /etc/containers/policy.json /etc/containers/policy.json.before-bastion
+python3 -I -c 'import json; p = "/etc/containers/policy.json"; d = json.load(open(p)); d["transports"]["docker"]["ghcr.io/opus-oss"] = [{"type": "sigstoreSigned", "keyPath": "/etc/pki/containers/opus-oss.pub", "signedIdentity": {"type": "matchRepository"}}]; json.dump(d, open(p, "w"), indent=2)'
+
 # ostree-image-signed: means the registry signature is verified before anything is deployed.
 # The unsigned form (ostree-unverified-registry:) would work and is what most guides show; it
 # also means anyone who can write to the registry can write to your laptop.
@@ -44,6 +55,8 @@ rpm-ostree rebase "ostree-image-signed:docker://$IMAGE"
 cat <<'EOF'
 
 Done. Reboot to use it.
+
+The disk passphrase prompt is plain text from now on: no boot splash.
 
 After the reboot:
   rpm-ostree status          what you are running, and what you can roll back to
