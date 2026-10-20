@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download, verify and install Whonix for KVM.   sudo /etc/nixos/whonix.sh [lxqt|cli]
+# Download, verify and install Whonix for KVM.   run0 bash whonix.sh [lxqt|cli]
 #
 # Whonix is a gateway VM that routes everything through Tor and a workstation VM with no route
 # to anything except the gateway. The isolation is the point, so this script refuses to install
@@ -7,14 +7,15 @@
 # fingerprint below, and a key that does not match it is a failure, not a prompt.
 #
 # Deviation from the upstream instructions, on purpose: Whonix's wiki uses `qemu:///session`,
-# per-user libvirt with user-mode networking. This host runs system libvirtd (the user is in
-# the libvirtd group), so everything here uses qemu:///system. That keeps the Whonix bridges
-# as real interfaces governed by modules/firewall.nix instead of a userspace NAT this machine's
-# nftables rules never see.
+# per-user libvirt. This host runs the system libvirt daemons (ujust set-libvirt-daemons on),
+# so everything here uses qemu:///system, and the disk images live under /var/lib/libvirt
+# with the SELinux labels libvirt expects there.
+#
+# Run through bash, not directly: SELinux refuses run0 an entrypoint into most binaries.
 set -euo pipefail
-[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "run with: run0 bash $0" >&2; exit 1; }
 
-VERSION=18.2.1.9
+VERSION=18.2.4.1
 # Patrick Schleizer <adrelanos@whonix.org>, from whonix.org/wiki/Main/Project_Signing_Key.
 # Verifying a signature against a key fetched from the same site proves only that the site is
 # self-consistent. Pinning the fingerprint here is what makes the check mean anything.
@@ -34,19 +35,8 @@ images=/var/lib/libvirt/images
 mkdir -p "$work" "$images"
 cd "$work"
 
-# gpg is not in the system closure and this script should not need it to be. Take it from the
-# store for the length of the run, in a throwaway keyring so root's own is never touched.
-gpg_bin=$(command -v gpg || true)
-if [[ -z $gpg_bin ]]; then
-  echo "== Fetching gnupg (not installed system-wide)"
-  # gnupg is multi-output, so --print-out-paths prints several store paths (man among them) and
-  # only one of them actually holds the binary. Pick by looking for it rather than by position.
-  for p in $(nix --extra-experimental-features 'nix-command flakes' \
-      build --no-link --print-out-paths nixpkgs#gnupg); do
-    [[ -x $p/bin/gpg ]] && gpg_bin=$p/bin/gpg && break
-  done
-  [[ -n ${gpg_bin:-} && -x $gpg_bin ]] || { echo "could not get a gpg binary" >&2; exit 1; }
-fi
+# A throwaway keyring, so root's own is never touched.
+gpg_bin=$(command -v gpg) || { echo "gpg not found" >&2; exit 1; }
 export GNUPGHOME="$work/gnupg"
 rm -rf "$GNUPGHOME"
 mkdir -p -m 700 "$GNUPGHOME"
@@ -108,7 +98,7 @@ for img in Whonix-*.qcow2; do
   fi
 done
 
-# libvirt on NixOS starts with no storage pools at all, and the Whonix domains reference one
+# libvirt may start with no storage pools at all, and the Whonix domains reference one
 # called "default" by name -- without it they fail to start with "Storage pool not found".
 echo "== Storage pool"
 if virsh -c qemu:///system pool-info default >/dev/null 2>&1; then
@@ -123,9 +113,9 @@ virsh -c qemu:///system pool-refresh default >/dev/null 2>&1 || true
 
 # No networks to define. Whonix 18 does not use libvirt networks: the gateway reaches clearnet
 # through QEMU's own userspace stack (interface type='user') and the two machines are joined by
-# a UDP socket pair on loopback (type='udp', ports 5577 and 6688). Nothing is bridged, so there
-# is no interface for hardened.firewall.forwardInterfaces to carry and the forward chain can
-# stay shut. The loopback pair is already allowed by the egress table's `oifname "lo" accept`.
+# a UDP socket pair on loopback (type='udp', ports 5577 and 6688). Nothing is bridged, so the
+# forward chain in /etc/nftables/bastion.nft can stay shut, and the loopback pair is already
+# allowed by its `iif lo accept` and `oif lo accept`.
 echo "== Defining machines"
 for xml in *.xml; do
   grep -q '<domain' "$xml" || continue

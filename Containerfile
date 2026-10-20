@@ -52,6 +52,37 @@ RUN set -eux; \
     cp .config "/out/lib/modules/${kver}/config"; \
     cp System.map "/out/lib/modules/${kver}/System.map"
 
+# --- GNOME Shell in the Opus palette -------------------------------------------------------------
+# The top bar, overview, quick settings, lock and login screens are drawn from a stylesheet
+# compiled into gnome-shell-theme.gresource, which no setting reaches beyond the accent presets
+# (none of them amber). The NixOS build rebuilt gnome-shell from its .scss; here the compiled
+# stylesheets are unpacked, recoloured and repacked. Done in its own stage on the same base, so
+# the resource tools stay out of the image and the stylesheet matches the gnome-shell shipped.
+FROM ${BASE}:${TAG} AS shelltheme
+RUN dnf5 install -y glib2-devel && dnf5 clean all
+RUN set -eux; \
+    G=/usr/share/gnome-shell/gnome-shell-theme.gresource; \
+    mkdir -p /work/src; cd /work/src; \
+    for r in $(gresource list "$G"); do mkdir -p ".$(dirname "$r")"; gresource extract "$G" "$r" > ".$r"; done; \
+    t=org/gnome/shell/theme; \
+    # The accent, in both variants: Opus amber, with ground-coloured text on it. fg first, so the
+    # shorter name does not match inside it.
+    sed -i -e 's/-st-accent-fg-color/#1b1e1f/g' -e 's/-st-accent-color/#d98a3d/g' \
+      "$t/gnome-shell-dark.css" "$t/gnome-shell-light.css"; \
+    # The dark variant's greys, as the NixOS build set them in _default-colors.scss/_colors.scss:
+    # base #222226 -> ground, bg #36363a -> raised, and fg -> Opus ink.
+    sed -i -e 's/#222226/#1b1e1f/g' -e 's/#36363a/#2e3334/g' -e 's/#2e2e33/#292e2f/g' \
+      -e 's/#38383b/#353b3c/g' -e 's/#fafafb/#e7e4d9/g' "$t/gnome-shell-dark.css"; \
+    # A renamed variable upstream would leave the stock colours quietly in place; fail instead.
+    if grep -q -- '-st-accent' "$t/gnome-shell-dark.css"; then echo "accent left unpatched" >&2; exit 1; fi; \
+    grep -q '#d98a3d' "$t/gnome-shell-dark.css"; \
+    { echo '<?xml version="1.0" encoding="UTF-8"?>'; echo '<gresources><gresource prefix="/">'; \
+      for r in $(gresource list "$G"); do echo "<file>${r#/}</file>"; done; \
+      echo '</gresource></gresources>'; } > ../theme.xml; \
+    glib-compile-resources --sourcedir=. --target=/work/gnome-shell-theme.gresource ../theme.xml; \
+    gresource list "$G" > ../before.txt; gresource list /work/gnome-shell-theme.gresource > ../after.txt; \
+    diff ../before.txt ../after.txt
+
 # --- Generic image: ghcr.io/opus-oss/bastion-atomic ----------------------------------------------
 # secureblue's kernel, so it runs on any machine secureblue does.
 FROM ${BASE}:${TAG} AS generic
@@ -65,6 +96,7 @@ RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
 # lands where is obvious from the tree.
 COPY files/ /
+COPY --from=shelltheme /work/gnome-shell-theme.gresource /usr/share/gnome-shell/gnome-shell-theme.gresource
 
 RUN set -eux; \
     \

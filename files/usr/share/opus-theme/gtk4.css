@@ -1,0 +1,45 @@
+/* Opus palette for libadwaita, installed as ~/.config/gtk-4.0/gtk.css.
+   libadwaita 1.6 and later read colours from these CSS variables; the @define-color names in
+   gtk.css (which adw-gtk3 still uses, for GTK3 apps) no longer reach GTK4 apps. Setting the
+   accent here also overrides the GNOME accent preset, which has no amber. */
+:root {
+  --accent-bg-color: #d98a3d;
+  --accent-fg-color: #1b1e1f;
+  --accent-color: #e6a15c;
+
+  --destructive-bg-color: #d0655c;
+  --destructive-fg-color: #1b1e1f;
+  --destructive-color: #e07f76;
+  --success-bg-color: #4bbfa6;
+  --success-fg-color: #1b1e1f;
+  --success-color: #6fd3bd;
+  --warning-bg-color: #e6a15c;
+  --warning-fg-color: #1b1e1f;
+  --warning-color: #e6a15c;
+  --error-bg-color: #d0655c;
+  --error-fg-color: #1b1e1f;
+  --error-color: #e07f76;
+
+  --window-bg-color: #1b1e1f;
+  --window-fg-color: #e7e4d9;
+  --view-bg-color: #222627;
+  --view-fg-color: #e7e4d9;
+  --headerbar-bg-color: #222627;
+  --headerbar-fg-color: #e7e4d9;
+  --headerbar-backdrop-color: #1b1e1f;
+  --headerbar-border-color: #353b3c;
+  --sidebar-bg-color: #222627;
+  --sidebar-fg-color: #e7e4d9;
+  --sidebar-backdrop-color: #1b1e1f;
+  --secondary-sidebar-bg-color: #292e2f;
+  --secondary-sidebar-fg-color: #e7e4d9;
+  --card-bg-color: #2e3334;
+  --card-fg-color: #e7e4d9;
+  --dialog-bg-color: #222627;
+  --dialog-fg-color: #e7e4d9;
+  --popover-bg-color: #2e3334;
+  --popover-fg-color: #e7e4d9;
+  --thumbnail-bg-color: #2e3334;
+  --thumbnail-fg-color: #e7e4d9;
+  --shade-color: rgb(0 0 0 / 36%);
+}
