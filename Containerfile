@@ -153,7 +153,10 @@ RUN set -eux; \
       fw="$fw $found"; \
     done; \
     rm /tmp/initramfs-firmware.txt; \
-    dracut --no-hostonly --kver "$kver" --reproducible --zstd --install "$fw" \
+    # --add ostree: the module only includes itself on request (check() returns 255), and without
+    # ostree-prepare-root the initramfs cannot mount the deployment. rpm-ostree asks for it when it
+    # builds an initramfs; a hand-run dracut has to ask too.
+    dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree --install "$fw" \
       -f "/usr/lib/modules/$kver/initramfs.img"; \
     chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
     # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that
