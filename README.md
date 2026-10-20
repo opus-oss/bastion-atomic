@@ -29,6 +29,16 @@ Images build in CI and publish to ghcr.io; installs rebase onto them. Nothing is
 target machine, which is the point of an image-based system and the reason this cannot be done
 the way `update.sh` works on NixOS.
 
+Two images come out of the one Containerfile:
+
+| Image | Kernel | Runs on |
+| --- | --- | --- |
+| `ghcr.io/opus-oss/bastion-atomic` | secureblue's | anything secureblue supports |
+| `ghcr.io/opus-oss/bastion-atomic-forge` | forge's device-only linux-hardened (`kernel/`) | forge only: Framework 13 AMD 7040 |
+
+The forge kernel has drivers for that one laptop and nothing else, so it will not boot anywhere
+else. Both are signed with the same key.
+
 ## Feature mapping
 
 Each `hardened.*` option from the NixOS build, and where it lands here.

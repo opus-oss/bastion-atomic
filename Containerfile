@@ -52,8 +52,9 @@ RUN set -eux; \
     cp .config "/out/lib/modules/${kver}/config"; \
     cp System.map "/out/lib/modules/${kver}/System.map"
 
-# --- Image -------------------------------------------------------------------------------------
-FROM ${BASE}:${TAG}
+# --- Generic image: ghcr.io/opus-oss/bastion-atomic ----------------------------------------------
+# secureblue's kernel, so it runs on any machine secureblue does.
+FROM ${BASE}:${TAG} AS generic
 
 # DoH resolver, installed before the copy so files/etc/dnscrypt-proxy/dnscrypt-proxy.toml replaces
 # the package's default rather than being set aside as .rpmnew. Then the Opus theme's fonts, and
@@ -64,43 +65,6 @@ RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
 # lands where is obvious from the tree.
 COPY files/ /
-
-# Swap secureblue's kernel for the one built above. An ostree deployment boots whatever single
-# kernel is in /usr/lib/modules, with vmlinuz and initramfs.img beside its modules, so the old
-# packages go (--nodeps: kernel-tools and friends name them but work with any kernel; --noscripts:
-# their scriptlets call kernel-install, which has nothing to do in an image build) and the
-# initramfs is regenerated for the new one with secureblue's own dracut settings.
-COPY --from=kernel /out/lib/modules/ /usr/lib/modules/
-COPY kernel/initramfs-firmware.txt /tmp/initramfs-firmware.txt
-RUN set -eux; \
-    kver="$(ls /usr/lib/modules | grep -- '-bastion$')"; \
-    rpm -e --nodeps --noscripts $(rpm -qa --qf '%{NAME}\n' kernel kernel-core 'kernel-modules*'); \
-    for d in /usr/lib/modules/*; do [ "${d##*/}" = "$kver" ] || rm -rf "$d"; done; \
-    depmod -a "$kver"; \
-    # Built-in drivers probe before the root filesystem exists, so their firmware has to be in
-    # the initramfs. A missing file is a build error, not a black screen at the LUKS prompt.
-    fw=""; \
-    for f in $(grep -vE '^\s*(#|$)' /tmp/initramfs-firmware.txt); do \
-      found=""; \
-      for c in "/usr/lib/firmware/$f" "/usr/lib/firmware/$f.xz" "/usr/lib/firmware/$f.zst"; do \
-        [ -e "$c" ] && found="$c"; \
-      done; \
-      [ -n "$found" ] || { echo "firmware not found: $f" >&2; exit 1; }; \
-      fw="$fw $found"; \
-    done; \
-    rm /tmp/initramfs-firmware.txt; \
-    dracut --no-hostonly --kver "$kver" --reproducible --zstd --install "$fw" \
-      -f "/usr/lib/modules/$kver/initramfs.img"; \
-    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
-    # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that
-    # what this machine cannot boot without made it in: the firmware, the LUKS unlock, and the
-    # step that mounts the ostree deployment.
-    lsinitrd -m "/usr/lib/modules/$kver/initramfs.img"; \
-    lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initramfs.list; \
-    for want in $fw /usr/lib/systemd/systemd-cryptsetup /usr/lib/ostree/ostree-prepare-root; do \
-      grep -qF " ${want#/}" /tmp/initramfs.list || { echo "missing from initramfs: $want" >&2; exit 1; }; \
-    done; \
-    rm /tmp/initramfs.list
 
 RUN set -eux; \
     \
@@ -158,3 +122,46 @@ RUN set -eux; \
     # it, which catches the things that actually break a deployment -- content in /var, files
     # outside /usr and /etc -- rather than erroring on the build method.
     if command -v bootc >/dev/null 2>&1; then bootc container lint || true; fi
+
+# --- forge image: ghcr.io/opus-oss/bastion-atomic-forge -------------------------------------------
+# The generic image with the device-only kernel. It has drivers for forge (Framework 13 AMD 7040)
+# and nothing else, so it does not boot on other hardware. Last in the file, so a build with no
+# --target produces this one; the workflow names each target explicitly.
+FROM generic AS forge
+
+# Swap secureblue's kernel for the one built above. An ostree deployment boots whatever single
+# kernel is in /usr/lib/modules, with vmlinuz and initramfs.img beside its modules, so the old
+# packages go (--nodeps: kernel-tools and friends name them but work with any kernel; --noscripts:
+# their scriptlets call kernel-install, which has nothing to do in an image build) and the
+# initramfs is regenerated for the new one with secureblue's own dracut settings.
+COPY --from=kernel /out/lib/modules/ /usr/lib/modules/
+COPY kernel/initramfs-firmware.txt /tmp/initramfs-firmware.txt
+RUN set -eux; \
+    kver="$(ls /usr/lib/modules | grep -- '-bastion$')"; \
+    rpm -e --nodeps --noscripts $(rpm -qa --qf '%{NAME}\n' kernel kernel-core 'kernel-modules*'); \
+    for d in /usr/lib/modules/*; do [ "${d##*/}" = "$kver" ] || rm -rf "$d"; done; \
+    depmod -a "$kver"; \
+    # Built-in drivers probe before the root filesystem exists, so their firmware has to be in
+    # the initramfs. A missing file is a build error, not a black screen at the LUKS prompt.
+    fw=""; \
+    for f in $(grep -vE '^\s*(#|$)' /tmp/initramfs-firmware.txt); do \
+      found=""; \
+      for c in "/usr/lib/firmware/$f" "/usr/lib/firmware/$f.xz" "/usr/lib/firmware/$f.zst"; do \
+        [ -e "$c" ] && found="$c"; \
+      done; \
+      [ -n "$found" ] || { echo "firmware not found: $f" >&2; exit 1; }; \
+      fw="$fw $found"; \
+    done; \
+    rm /tmp/initramfs-firmware.txt; \
+    dracut --no-hostonly --kver "$kver" --reproducible --zstd --install "$fw" \
+      -f "/usr/lib/modules/$kver/initramfs.img"; \
+    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
+    # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that
+    # what this machine cannot boot without made it in: the firmware, the LUKS unlock, and the
+    # step that mounts the ostree deployment.
+    lsinitrd -m "/usr/lib/modules/$kver/initramfs.img"; \
+    lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initramfs.list; \
+    for want in $fw /usr/lib/systemd/systemd-cryptsetup /usr/lib/ostree/ostree-prepare-root; do \
+      grep -qF " ${want#/}" /tmp/initramfs.list || { echo "missing from initramfs: $want" >&2; exit 1; }; \
+    done; \
+    rm /tmp/initramfs.list
