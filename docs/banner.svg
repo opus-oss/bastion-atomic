@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320">
+  <rect width="1280" height="320" fill="#1b1e1f"/>
+  <g transform="translate(1060 160)" fill="none">
+    <circle r="190" stroke="#2e3334" stroke-width="2"/>
+    <circle r="140" stroke="#353b3c" stroke-width="2"/>
+    <circle r="96" stroke="#d98a3d" stroke-width="3" stroke-opacity="0.75"/>
+    <circle r="52" stroke="#d98a3d" stroke-width="2" stroke-opacity="0.4"/>
+    <line x1="0" y1="-200" x2="0" y2="200" stroke="#2e3334" stroke-width="2"/>
+    <line x1="-200" y1="0" x2="200" y2="0" stroke="#2e3334" stroke-width="2"/>
+    <circle r="7" fill="#d98a3d"/>
+  </g>
+  <text x="72" y="168" fill="#e7e4d9" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="104" font-weight="800" letter-spacing="-3">bastion</text>
+  <text x="76" y="218" fill="#d98a3d" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="22" letter-spacing="1">FEDORA ATOMIC · SECUREBLUE · SIGNED NIGHTLY</text>
+  <text x="76" y="252" fill="#a1a59d" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="18">nothing in · nothing leaks · nothing persists unseen</text>
+</svg>
