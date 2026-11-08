@@ -10,6 +10,5 @@
     <circle r="7" fill="#d98a3d"/>
   </g>
   <text x="72" y="168" fill="#e7e4d9" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="104" font-weight="800" letter-spacing="-3">bastion</text>
-  <text x="76" y="218" fill="#d98a3d" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="22" letter-spacing="1">FEDORA ATOMIC · SECUREBLUE · SIGNED NIGHTLY</text>
-  <text x="76" y="252" fill="#a1a59d" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="18">nothing in · nothing leaks · nothing persists unseen</text>
+  <text x="76" y="218" fill="#d98a3d" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="22" letter-spacing="1">Hardened Fedora Atomic, built on secureblue</text>
 </svg>
