@@ -7,7 +7,7 @@
   <img alt="Fedora Atomic" src="https://img.shields.io/badge/Fedora-Atomic-353b3c">
 </p>
 
-bastion is a hardened Fedora Atomic desktop image built on top of secureblue.
+bastion is a hardened Fedora Atomic desktop image built on top of secureblue, and this repo holds everything it changes.
 
 - **Layers**
   - Fedora Silverblue is the stock Fedora Atomic GNOME desktop.
@@ -31,7 +31,7 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue.
     ```
 - **What the installer does**
   - It trusts this repo's signing key first, then rebases with `ostree-image-signed:`, so an unsigned image is never deployed.
-  - It leaves your secureblue deployment in the boot menu as the way back.
+  - Your secureblue deployment stays in the boot menu, so you can boot back into it.
 - **Updates**
   - New builds arrive as ordinary `rpm-ostree upgrade`s and apply on reboot.
   - `rpm-ostree rollback` returns to the previous build.
@@ -45,15 +45,15 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue.
 - **DNS over HTTPS only** (replaces secureblue's Unbound DNS-over-TLS)
   - dnscrypt-proxy runs on loopback and sends DoH over port 443 to Quad9, Cloudflare and Mullvad.
   - NetworkManager ignores DNS servers offered by DHCP.
-  - DNS-over-TLS uses port 853, which some networks reset; port 443 is not blocked that way.
+  - DNS-over-TLS needs port 853, which some networks reset, and DoH on 443 gets through those networks.
   - Files: `etc/dnscrypt-proxy/`, `etc/NetworkManager/conf.d/zz-bastion-dns.conf`, `etc/resolv.conf`.
 - **nftables firewall** (replaces firewalld)
-  - All inbound traffic is dropped, and ping is not answered.
+  - All inbound traffic is dropped, and ping goes unanswered.
   - Nothing is forwarded except libvirt's virtual bridges.
   - Outbound plaintext DNS (ports 53, 5353, 5355) is rejected, so no program can bypass the encrypted resolver.
   - File: `etc/nftables/bastion.nft`.
 - **HTTPS quorum clock** (replaces chrony with NTS)
-  - The clock is set from the `Date` headers of HTTPS servers, with no NTP.
+  - The clock is set from the `Date` headers of HTTPS servers, and there's no NTP client at all.
   - One server is picked from each of 5 independent pools, and the clock moves only when at least 3 agree within 2 seconds plus their measured error.
   - Files: `usr/lib/bastion-timesync.py`, `etc/bastion/timesync.json`.
 - **Persistence tripwire** (new)
@@ -67,8 +67,8 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue.
   - CI also attaches a GitHub build-provenance attestation.
   - File: `.github/workflows/build.yml`.
 - **Device-only kernel** (forge image only; replaces secureblue's kernel)
-  - linux-hardened 6.18.56, with the source tarball hash and the patch signature checked during the build.
-  - Every driver the machine uses is built in.
+  - It's linux-hardened 6.18.56, and the build checks the source tarball's hash and the patch's signature before compiling.
+  - Every driver the machine uses is built into the kernel.
   - Modules are signed with a key that is deleted at the end of the build stage, so no module built later can load.
   - The build fails if the initramfs is missing the firmware, the LUKS unlock or the ostree mount step.
   - Directory: `kernel/`.
@@ -76,8 +76,8 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue.
   - `kernel.yama.ptrace_scope` is 2 (admin only); secureblue sets 1.
   - File: `etc/sysctl.d/90-bastion.conf`.
 - **Five more blocked kernel modules**
-  - `mei` and `mei-me` (Intel ME), `sp5100_tco`, `pcspkr`, and `uvcvideo`.
-  - The webcam (`uvcvideo`) is blocked outright instead of being a toggle.
+  - bastion also blocks `mei` and `mei-me` (Intel ME), `sp5100_tco`, `pcspkr` and `uvcvideo`.
+  - secureblue leaves the webcam as a toggle, while bastion blocks `uvcvideo` outright.
   - File: `etc/modprobe.d/90-bastion-blocked.conf`.
 - **Text-only boot**
   - `plymouth.enable=0` gives a plain console LUKS prompt and removes a 3.4-second `plymouth-quit-wait` delay.
@@ -97,28 +97,28 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue.
 These come from secureblue, not this repo. Sources: [secureblue.dev/features](https://secureblue.dev/features) and the [secureblue repo](https://github.com/secureblue/secureblue).
 
 - **Kernel**
-  - Fedora's kernel, rebuilt and signed with secureblue's key, booted through shim and MOK for Secure Boot.
-  - 37 extra kernel arguments, including `lockdown=confidentiality`, `module.sig_enforce=1`, `init_on_alloc=1`, `init_on_free=1`, `mitigations=auto,nosmt`, `iommu.strict=1`, `pti=on`, `slab_debug=FZ` and `random.trust_cpu=off`.
-  - Hardened sysctls: kernel pointer and dmesg restriction, unprivileged BPF and kexec off, perf restricted, no ICMP redirects or source routing.
-  - A large module blacklist covering rare network protocols and filesystems, FireWire and Thunderbolt, with Bluetooth and the webcam off by default.
+  - secureblue rebuilds Fedora's kernel and signs it with its own key, which shim and MOK accept under Secure Boot.
+  - It adds 37 kernel arguments, including `lockdown=confidentiality`, `module.sig_enforce=1`, `init_on_alloc=1`, `init_on_free=1`, `mitigations=auto,nosmt`, `iommu.strict=1`, `pti=on`, `slab_debug=FZ` and `random.trust_cpu=off`.
+  - Its sysctls restrict kernel pointers and dmesg, turn off unprivileged BPF and kexec, restrict perf, and refuse ICMP redirects and source routing.
+  - Its module blacklist covers rare network protocols and filesystems, FireWire and Thunderbolt, and Bluetooth and the webcam start off.
 - **Memory**
-  - hardened_malloc system-wide, including inside Flatpaks.
+  - hardened_malloc replaces glibc's allocator system-wide, inside Flatpaks too.
 - **Confinement**
   - SELinux confines a hardened Chromium browser (Trivalent) and restricts socket classes.
   - Unprivileged user namespaces are blocked for unconfined and container domains.
 - **Root access**
-  - sudo, su and pkexec are removed and replaced by `run0`.
+  - sudo, su and pkexec are gone, and `run0` takes their place.
   - Every setuid bit under `/usr` is stripped, with file capabilities where a program needs them.
 - **Desktop**
   - Xwayland, thumbnailers and user GNOME extensions are off by default.
 - **Network**
-  - firewalld with every service closed, Unbound DNS-over-TLS with DNSSEC, chrony with NTS, and MAC address randomisation.
+  - firewalld ships with every service closed, DNS goes through Unbound over TLS with DNSSEC, chrony uses NTS, and MAC addresses are randomised.
 - **Login and USB**
   - Accounts lock for 24 hours after 50 failed logins.
   - USBGuard is available through `ujust setup-usbguard`.
 - **Images and apps**
   - The container policy rejects unsigned images.
-  - Only verified Flathub apps are enabled.
+  - Only Flathub's verified apps are enabled.
 
 ## Limitations
 
@@ -128,14 +128,14 @@ These come from secureblue, not this repo. Sources: [secureblue.dev/features](ht
   - File sharing, casting and remote access need a firewall rule added first.
 - **Forge image and Secure Boot**
   - The forge kernel's modules are signed but `vmlinuz` is not, so shim refuses it and the forge image needs Secure Boot off.
-  - The generic image is not affected.
+  - The generic image doesn't have this problem.
 - **Forge kernel updates**
   - The forge kernel is pinned to 6.18.56 and gets security fixes only when `KERNEL_VERSION` and the signed patch in `kernel/` are updated.
 - **Base image**
   - The build tracks secureblue's `latest` tag, so upstream changes arrive with the next nightly build.
 - **Planned**
-  - A kill switch that wipes the LUKS key slots, triggered by a USB dead-man switch.
-  - An amnesic boot entry with the disk read-only and all changes kept in RAM.
+  - A kill switch will wipe the LUKS key slots when a USB dead-man switch is pulled.
+  - An amnesic boot entry will keep the disk read-only and hold every change in RAM.
 
 ## Layout
 
