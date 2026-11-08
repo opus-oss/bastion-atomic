@@ -121,32 +121,14 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue, an
   - A kill switch will wipe the LUKS key slots when a USB dead-man switch is pulled.
   - An amnesic boot entry will keep the disk read-only and hold every change in RAM.
 
-## Experimental: device-fingerprinted kernel
-
-> [!WARNING]
-> This image isn't ready for general use. Its kernel has been built and booted on a single fingerprinted PC, a Framework 13 AMD 7040, and it won't boot on other hardware.
-
-- **What it is**
-  - `ghcr.io/opus-oss/bastion-atomic-forge` swaps secureblue's kernel for linux-hardened 6.18.56, configured from one machine's hardware profile.
-  - The build checks the source tarball's hash and the patch's signature before compiling.
-  - Every driver that machine uses is built into the kernel.
-  - Modules are signed with a key the build deletes when it finishes, and no module built afterwards can load.
-  - The build fails if the initramfs is missing the firmware, the LUKS unlock or the ostree mount step.
-  - Directory: `kernel/`.
-- **Known problems**
-  - The kernel's modules are signed but `vmlinuz` isn't, and shim refuses it while Secure Boot is on.
-  - It's pinned to 6.18.56 and only gets security fixes when `KERNEL_VERSION` and the signed patch in `kernel/` are updated.
-- **Install**
-  - On the matching machine only, run `run0 env IMAGE=ghcr.io/opus-oss/bastion-atomic-forge:latest bash install.sh`.
-
 ## Layout
 
 ```
-Containerfile          kernel build, Shell theme, then the standard and experimental images
+Containerfile          image build, including the GNOME Shell theme stage
 .github/workflows/     nightly build, push, provenance attestation, cosign signature
 install.sh             adds the signing key and rebases secureblue onto bastion
 whonix.sh              verified Whonix install
-kernel/                experimental kernel config, Fedora additions, linux-hardened patch and signature
+kernel/                linux-hardened patch, signature and config for a device-specific kernel build
 files/                 copied to / as-is
   etc/                 DNS, firewall, sysctls, blocked modules, timesync, dconf, signing policy
   usr/                 timesync, systemd units, kernel arguments, theme
