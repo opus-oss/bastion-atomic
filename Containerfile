@@ -141,16 +141,6 @@ RUN set -eux; \
     systemctl enable bastion-tripwire.timer; \
     systemctl --global enable bastion-tripwire-notify.timer; \
     \
-    # --- setuid ---------------------------------------------------------------------------------
-    # The setuid bits this build does not need. Doing it at image build time is strictly better
-    # than the NixOS equivalent: /usr is immutable at runtime, so nothing can put them back, and
-    # a package update cannot quietly restore them either.
-    # su: sudo covers it. newgrp/sg: group switching, unused. pkexec: CVE-2021-4034 lived here,
-    # and polkit's own D-Bus path does not need the setuid binary.
-    for f in /usr/bin/su /usr/bin/newgrp /usr/bin/sg /usr/bin/pkexec; do \
-      [ -e "$f" ] && chmod u-s "$f" || true; \
-    done; \
-    \
     # --- Sanity ---------------------------------------------------------------------------------
     # `ostree container commit` used to go here. It fails on this base with "Not in an
     # ostree-based container environment": the step belongs to the older ostree layering flow and
