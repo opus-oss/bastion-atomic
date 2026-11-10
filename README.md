@@ -15,7 +15,7 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue, an
   - bastion hardens secureblue further with DNS over HTTPS only, an nftables firewall and a clock set from HTTPS servers.
 - **How it's built**
   - The image starts from `ghcr.io/secureblue/silverblue-main-hardened` and adds only what's in this repo.
-  - GitHub Actions rebuilds and signs it every night, which brings in secureblue's fixes without anyone merging them by hand.
+  - GitHub Actions rebuilds and signs it every night for amd64 and arm64, which brings in secureblue's fixes without anyone merging them by hand.
   - Nothing is compiled or layered on the installed machine.
 
 ## Install
@@ -33,6 +33,11 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue, an
   - It adds this repo's signing key to the system's container policy before it pulls anything.
   - It then rebases with `ostree-image-signed:`, which refuses any image that isn't signed with that key.
   - Your secureblue deployment stays in the boot menu as a way back.
+- **In a virtual machine**
+  - The standard image is built for both amd64 and arm64, and rpm-ostree pulls the one that matches the machine.
+  - On an Apple Silicon Mac, create an ARM64 virtual machine in UTM and install Fedora Silverblue's aarch64 release in it.
+  - Then follow secureblue's [ARM64 instructions](https://secureblue.dev/install) to switch it to secureblue, and run the installer above.
+  - The arm64 image builds in CI, but nobody has booted it in a virtual machine yet.
 - **Updates**
   - New builds arrive as ordinary `rpm-ostree upgrade`s and apply on reboot.
   - `rpm-ostree rollback` returns to the previous build.

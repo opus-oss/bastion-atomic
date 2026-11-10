@@ -9,8 +9,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Rebuild nightly so upstream secureblue fixes land without anyone pushing. The base tag is
-  # pinned in the Containerfile, so this picks up rebuilds of that tag, not a new major.
+  # Rebuild nightly to pick up secureblue's fixes without anyone pushing.
   schedule:
     - cron: "0 5 * * *"
   workflow_dispatch:
@@ -20,26 +19,32 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    # Two images from one Containerfile: the generic one runs anywhere secureblue does, forge adds
-    # the device-only kernel for that one laptop. Same signing key, so the policy.json entry the
-    # generic image ships (ghcr.io/opus-oss) covers both.
+    # Each image is built natively per architecture, since emulating arm64 on an x86 runner would
+    # take hours. The generic image is built for amd64 and for arm64, which covers UTM and other
+    # virtual machines on Apple Silicon. The forge image carries an x86 kernel, which keeps it on
+    # amd64. Each build is pushed under a per-architecture tag, and the manifest job below joins
+    # them into the multi-architecture `latest` and commit tags that machines pull.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - image: bastion-atomic
             target: generic
+            arch: amd64
+            runner: ubuntu-24.04
+          - image: bastion-atomic
+            target: generic
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - image: bastion-atomic-forge
             target: forge
+            arch: amd64
+            runner: ubuntu-24.04
     permissions:
       contents: read
       # Needed to push to ghcr.io as GITHUB_TOKEN; no personal token or secret required.
       packages: write
-      # Lets the build attach a signed provenance attestation, so a puller can verify the image
-      # came from this workflow in this repo and not from someone who got at the registry.
-      id-token: write
-      attestations: write
 
     steps:
       - uses: actions/checkout@v4
@@ -51,14 +56,17 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
           df -h / | tail -1
 
+      # The x86 runner image ships buildah and podman. The arm64 one may not, and installing them
+      # is a no-op where they're already present.
+      - name: Container tools
+        run: command -v buildah >/dev/null && command -v podman >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq buildah podman; }
+
       - name: Build
         id: build
         uses: redhat-actions/buildah-build@v2
         with:
           image: ${{ matrix.image }}
-          # latest plus the commit, so a bad image can be rolled back to a known good digest
-          # rather than only to "whatever latest was yesterday".
-          tags: latest ${{ github.sha }}
+          tags: ${{ github.sha }}-${{ matrix.arch }}
           containerfiles: ./Containerfile
           extra-args: --target ${{ matrix.target }}
           oci: true
@@ -67,7 +75,6 @@ jobs:
       # the image everyone's laptop is tracking.
       - name: Push
         if: github.event_name != 'pull_request'
-        id: push
         uses: redhat-actions/push-to-registry@v2
         with:
           image: ${{ steps.build.outputs.image }}
@@ -76,35 +83,79 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # push-to-registry above logs in inside its own action, and that login does not outlive the
-      # step, so the attestation push failed with "No credentials found for registry ghcr.io".
-      # A real login here makes the credentials available to the step that follows.
-      - name: Registry login for attestation
-        if: github.event_name != 'pull_request'
+  manifest:
+    needs: build
+    # This still runs when the arm64 build fails, which keeps amd64 machines updating. It refuses
+    # to publish without an amd64 image.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: bastion-atomic
+            arches: amd64 arm64
+          - image: bastion-atomic-forge
+            arches: amd64
+    permissions:
+      contents: read
+      packages: write
+      # Lets the build attach a signed provenance attestation, which lets a puller verify the image
+      # came from this workflow in this repo and not from someone who got at the registry.
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Registry login
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `latest` and the commit tag both point at one index. The commit tag gives a known good
+      # digest to roll back to, which "whatever latest was yesterday" can't.
+      - name: Join architectures
+        id: manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ matrix.image }}
+          ARCHES: ${{ matrix.arches }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          echo "$TOKEN" | podman login -u "${{ github.actor }}" --password-stdin ghcr.io
+          podman manifest create bastion
+          for arch in $ARCHES; do
+            ref="docker://$IMAGE:${GITHUB_SHA}-$arch"
+            if skopeo inspect --raw "$ref" >/dev/null 2>&1; then
+              podman manifest add bastion "$ref"
+              echo "added $arch"
+            elif [ "$arch" = amd64 ]; then
+              echo "::error::no amd64 image for $GITHUB_SHA, refusing to publish"; exit 1
+            else
+              echo "::warning::no $arch image for $GITHUB_SHA, publishing without it"
+            fi
+          done
+          podman manifest push --all --format oci --digestfile digest bastion "docker://$IMAGE:$GITHUB_SHA"
+          podman manifest push --all --format oci bastion "docker://$IMAGE:latest"
+          echo "digest=$(cat digest)" >> "$GITHUB_OUTPUT"
+
       - name: Attest
-        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@v1
         with:
           subject-name: ${{ env.REGISTRY }}/${{ matrix.image }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
       # The attestation above is for humans with the GitHub CLI; rpm-ostree cannot check it. What
-      # `ostree-image-signed:` verifies is a cosign signature against the key in
-      # /etc/containers/policy.json, so the image is signed with that key here. The private half
-      # is the SIGNING_SECRET repository secret, created without a password.
+      # `ostree-image-signed:` verifies is a cosign signature against the key in the container
+      # policy, which is why the image is signed with that key here. `--recursive` signs the index
+      # and each architecture's image in it. The private half is the SIGNING_SECRET repository
+      # secret, created without a password.
       - uses: sigstore/cosign-installer@v3
-        if: github.event_name != 'pull_request'
 
       - name: Sign
-        if: github.event_name != 'pull_request'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           COSIGN_PASSWORD: ""
-        run: cosign sign -y --key env://COSIGN_PRIVATE_KEY ${{ env.REGISTRY }}/${{ matrix.image }}@${{ steps.push.outputs.digest }}
+        run: cosign sign -y --recursive --key env://COSIGN_PRIVATE_KEY ${{ env.REGISTRY }}/${{ matrix.image }}@${{ steps.manifest.outputs.digest }}
