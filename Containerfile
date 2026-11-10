@@ -107,10 +107,16 @@ RUN set -eux; \
     systemctl enable dnscrypt-proxy.service; \
     \
     # --- Image signature -----------------------------------------------------------------------
-    # Trust this repo's cosign key for ghcr.io/opus-oss, so `rpm-ostree upgrade` keeps verifying
-    # every new build. secureblue's policy.json is extended in place, not replaced, so its own
-    # entries keep tracking upstream.
-    python3 -c 'import json; p = "/etc/containers/policy.json"; d = json.load(open(p)); d["transports"]["docker"]["ghcr.io/opus-oss"] = [{"type": "sigstoreSigned", "keyPath": "/etc/pki/containers/opus-oss.pub", "signedIdentity": {"type": "matchRepository"}}]; json.dump(d, open(p, "w"), indent=2)'; \
+    # Trusting this repo's cosign key for ghcr.io/opus-oss lets `rpm-ostree upgrade` keep verifying
+    # every new build. secureblue's policy.json is extended in place rather than replaced, which
+    # keeps its own entries tracking upstream. From Fedora 45 on, secureblue ships it in
+    # /usr/share/containers and leaves /etc without one, while older bases kept it in /etc.
+    # Whichever exists gets the key, and the build fails if neither does.
+    n=0; for p in /usr/share/containers/policy.json /etc/containers/policy.json; do \
+      [ -e "$p" ] || continue; n=$((n+1)); \
+      python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["transports"]["docker"]["ghcr.io/opus-oss"] = [{"type": "sigstoreSigned", "keyPath": "/etc/pki/containers/opus-oss.pub", "signedIdentity": {"type": "matchRepository"}}]; json.dump(d, open(p, "w"), indent=2)' "$p"; \
+    done; [ "$n" -gt 0 ]; \
+    systemctl enable bastion-policy-cleanup.service; \
     \
     # --- Firewall ------------------------------------------------------------------------------
     # firewalld off, the nftables ruleset from modules/firewall.nix in its place. The rules are

@@ -44,7 +44,16 @@ echo "== Rebasing (downloads the image; several minutes)"
 echo "== Trusting this repo's signing key"
 install -m 0644 "$repo/cosign.pub" /etc/pki/containers/opus-oss.pub
 install -m 0644 "$repo/files/etc/containers/registries.d/opus-oss.yaml" /etc/containers/registries.d/opus-oss.yaml
-cp -n /etc/containers/policy.json /etc/containers/policy.json.before-bastion
+# Since Fedora 45 secureblue keeps the policy in /usr/share/containers, which is read-only here.
+# A copy in /etc overrides it, and the image deletes that copy on first boot (see
+# bastion-policy-cleanup.service) once its own policy carries the key. Without that cleanup the
+# copy would hide every later change secureblue makes to its policy.
+if [[ -e /etc/containers/policy.json ]]; then
+  cp -n /etc/containers/policy.json /etc/containers/policy.json.before-bastion
+else
+  cp /usr/share/containers/policy.json /etc/containers/policy.json
+  touch /etc/containers/.bastion-bootstrap-policy
+fi
 python3 -I -c 'import json; p = "/etc/containers/policy.json"; d = json.load(open(p)); d["transports"]["docker"]["ghcr.io/opus-oss"] = [{"type": "sigstoreSigned", "keyPath": "/etc/pki/containers/opus-oss.pub", "signedIdentity": {"type": "matchRepository"}}]; json.dump(d, open(p, "w"), indent=2)'
 
 # ostree-image-signed: means the registry signature is verified before anything is deployed.

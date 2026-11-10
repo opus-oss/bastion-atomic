@@ -1,0 +1,14 @@
+[Unit]
+Description=Remove the container policy copy install.sh left in /etc
+# install.sh copies policy.json into /etc only when the base keeps it in /usr/share, and marks
+# the copy. Once the image's own policy trusts ghcr.io/opus-oss the copy has done its job, and
+# leaving it would hide later secureblue policy changes.
+ConditionPathExists=/etc/containers/.bastion-bootstrap-policy
+ConditionPathExists=/usr/share/containers/policy.json
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'grep -q ghcr.io/opus-oss /usr/share/containers/policy.json && rm -f /etc/containers/policy.json /etc/containers/.bastion-bootstrap-policy'
+
+[Install]
+WantedBy=multi-user.target
