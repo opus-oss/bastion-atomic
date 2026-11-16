@@ -102,6 +102,14 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
   `kernel/configure.sh` on an allnoconfig tree (`ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-` for
   arm64).
 
+- **Amnesic boot** (`files/usr/lib/dracut/modules.d/90bastion-amnesic`, `bastion-amnesic-generator`,
+  `bastion-amnesic-menu`): RAM layers go over `/etc` and the stateroot's `/var` after
+  ostree-prepare-root, not under `/sysroot`: composefs is already an overlay, and the first try
+  with one beneath it never finished booting. Entries live in `/boot/grub2/bastion-amnesic.cfg`
+  (sourced from `custom.cfg`), since ostree reads every file in `loader/entries` as a deployment.
+  Mask boot mounts by unit name: `boot-efi.mount` does not come from fstab. `tests/amnesic/run.sh`
+  is the CI boot test.
+
 ## On the running system
 
 - `bastion-tripwire` (in the image, run as root after boot and daily) compares persistence
