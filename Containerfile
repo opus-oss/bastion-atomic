@@ -90,12 +90,16 @@ FROM ${BASE}:${TAG} AS generic
 # DoH resolver, installed before the copy so files/etc/dnscrypt-proxy/dnscrypt-proxy.toml replaces
 # the package's default rather than being set aside as .rpmnew. Then the Opus theme's fonts, and
 # adw-gtk3 so GTK3 apps take libadwaita's look and the Opus colours with it.
-RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw-gtk3-theme cosign \
+RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw-gtk3-theme \
     && dnf5 clean all
 
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
 # lands where is obvious from the tree.
 COPY files/ /
+# cosign, for bastion-verify-provenance. Fedora 45 does not package it, so take the binary from
+# Sigstore's own image, pinned by digest (v2.5.2, the version CI signs with) and verified against
+# Sigstore's release key, which secureblue already trusts for gcr.io/projectsigstore.
+COPY --from=gcr.io/projectsigstore/cosign@sha256:23d07b53d59a1233e1ab5e7d082cf4182fc90067d2f86a662ba3003215cb0c95 /ko-app/cosign /usr/bin/cosign
 COPY --from=shelltheme /work/gnome-shell-theme.gresource /usr/share/gnome-shell/gnome-shell-theme.gresource
 
 RUN set -eux; \
