@@ -1,0 +1,164 @@
+# Build a ready-to-boot qcow2 of the vm image, per architecture, for UTM and virt-manager.
+#
+# The disk is the published, signed bastion-atomic-vm image laid out by bootc-image-builder. It is
+# set to track ghcr.io/opus-oss/bastion-atomic-vm:latest with signature verification, so after
+# first boot it updates like any rebased machine. Each disk is boot-tested in QEMU, then pushed to
+# ghcr.io/opus-oss/bastion-atomic-vm-qcow2 as an OCI artifact and cosign-signed. ghcr rather than
+# a GitHub release, because a compressed disk is ~4 GB and release assets stop at 2 GiB.
+#
+# Weekly is enough: a disk only has to boot once, and from then on the machine pulls the nightly
+# image itself.
+name: qcow2
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/qcow2.yml, .github/qcow2/**]
+
+concurrency:
+  group: qcow2
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/bastion-atomic-vm
+  DISK: ghcr.io/${{ github.repository_owner }}/bastion-atomic-vm-qcow2
+  BIB: quay.io/centos-bootc/bootc-image-builder:latest
+
+jobs:
+  qcow2:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image unpacked, the raw disk and the compressed qcow2 together need ~30 GB.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/lib/jvm /usr/share/swift
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / /mnt 2>/dev/null
+
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq podman skopeo qemu-utils attr ovmf qemu-efi-aarch64 \
+            qemu-system-x86 qemu-system-arm
+          # GitHub's x86 runners have KVM, but /dev/kvm is root-only until this rule.
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm 2>/dev/null || echo "no /dev/kvm: the boot test runs under TCG"
+
+      - uses: sigstore/cosign-installer@v3
+      - uses: oras-project/setup-oras@v1
+
+      # Build only from the published image, verified against the same key machines trust, by the
+      # digest of this architecture's image. It is tagged :latest locally so bootc-image-builder
+      # records that tag, not the digest, as what the disk tracks.
+      - name: Source image
+        id: src
+        run: |
+          set -euo pipefail
+          digest=$(skopeo inspect --override-arch ${{ matrix.arch }} --format '{{.Digest}}' "docker://$IMAGE:latest")
+          cosign verify --key cosign.pub "$IMAGE@$digest" >/dev/null
+          echo "verified $IMAGE@$digest"
+          sudo podman pull -q --arch ${{ matrix.arch }} "$IMAGE@$digest"
+          sudo podman tag "$IMAGE@$digest" "$IMAGE:latest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # btrfs root, as on a Silverblue install; the image does not name a default filesystem.
+      - name: Build disk
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          sudo podman run --rm --privileged --pull=newer \
+            --security-opt label=type:unconfined_t \
+            -v "$PWD/.github/qcow2/config.toml:/config.toml:ro" \
+            -v "$PWD/output:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "$BIB" --type raw --rootfs btrfs --progress verbose "$IMAGE:latest"
+          sudo podman image inspect --format 'bootc-image-builder {{.Digest}}' "$BIB"
+          sudo podman rmi -af >/dev/null
+          ls -ls output/image
+          df -h /
+
+      # bootc-image-builder writes an ostree-unverified-registry origin and has no option for a
+      # signed one. Write the origin `rpm-ostree rebase ostree-image-signed:...` would, so every
+      # update is verified from the first. Written in place so the file keeps its SELinux label.
+      - name: Track the signed image
+        run: |
+          set -euo pipefail
+          want="container-image-reference=ostree-image-signed:docker://$IMAGE:latest"
+          loop=$(sudo losetup -fP --show output/image/disk.raw)
+          trap 'sudo umount mnt 2>/dev/null; sudo losetup -d "$loop"' EXIT
+          sudo lsblk -o NAME,FSTYPE,SIZE "$loop"
+          root=$(sudo lsblk -lnpo NAME,FSTYPE "$loop" | awk '$2 == "btrfs" { print $1 }')
+          mkdir -p mnt && sudo mount "$root" mnt
+          mapfile -t origins < <(sudo find mnt -maxdepth 7 -path '*/ostree/deploy/*/deploy/*.origin')
+          [ "${#origins[@]}" = 1 ] || { echo "::error::expected one deployment, found: ${origins[*]}"; exit 1; }
+          o=${origins[0]}
+          sudo cat "$o"
+          label=$(sudo getfattr --only-values -n security.selinux "$o")
+          new=$(sudo sed -E "s|^container-image-reference=.*|$want|" "$o")
+          grep -qxF "$want" <<<"$new"
+          printf '%s\n' "$new" | sudo tee "$o" >/dev/null
+          sudo cat "$o"
+          [ "$(sudo getfattr --only-values -n security.selinux "$o")" = "$label" ]
+          echo "label kept: $label"
+
+      - name: Convert to qcow2
+        run: |
+          set -euo pipefail
+          out=bastion-atomic-vm-${{ matrix.arch }}.qcow2
+          qemu-img convert -p -c -m 8 -W -O qcow2 output/image/disk.raw "$out"
+          sudo rm -rf output
+          qemu-img info "$out"
+          ls -lh "$out"
+
+      - name: Boot test
+        run: python3 .github/qcow2/boot-test.py ${{ matrix.arch }} bastion-atomic-vm-${{ matrix.arch }}.qcow2 "ostree-image-signed:docker://$IMAGE:latest" 3600
+
+      - name: Serial log
+        if: failure()
+        run: cat boot-test/serial.log 2>/dev/null || true
+
+      # Tags: <arch> follows the newest disk, <arch>-<image digest> keeps each one addressable.
+      - name: Publish
+        if: github.ref == 'refs/heads/main'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login -u "${{ github.actor }}" --password-stdin ghcr.io
+          echo "${{ secrets.GITHUB_TOKEN }}" | cosign login -u "${{ github.actor }}" --password-stdin ghcr.io
+          src=${{ steps.src.outputs.digest }}
+          tag=${{ matrix.arch }}-${src#sha256:}
+          f=bastion-atomic-vm-${{ matrix.arch }}.qcow2
+          oras push --disable-path-validation \
+            --artifact-type application/vnd.opus-oss.bastion.vm-disk \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.base.name=$IMAGE:latest" \
+            --annotation "org.opencontainers.image.base.digest=$src" \
+            "$DISK:${tag:0:24},${{ matrix.arch }}" "$f:application/vnd.qemu.qcow2"
+          digest=$(oras resolve "$DISK:${{ matrix.arch }}")
+          cosign sign -y --key env://COSIGN_PRIVATE_KEY "$DISK@$digest"
+          cosign verify --key cosign.pub "$DISK@$digest" >/dev/null
+          echo "published $DISK:${{ matrix.arch }} ($digest), signed" >> "$GITHUB_STEP_SUMMARY"

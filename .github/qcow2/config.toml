@@ -1,0 +1,6 @@
+# bootc-image-builder config for the vm image's qcow2. The disk is sparse, so the 64 GiB root
+# costs nothing to download; it leaves room for a second deployment on upgrade and for Flatpaks.
+# No user is baked in: GNOME Initial Setup creates one on first boot.
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "64 GiB"

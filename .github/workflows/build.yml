@@ -8,6 +8,8 @@ name: build
 on:
   push:
     branches: [main]
+    # Docs and the qcow2 workflow change nothing in the images.
+    paths-ignore: ["**.md", docs/**, .github/qcow2/**, .github/workflows/qcow2.yml]
   pull_request:
   # Rebuild nightly to pick up secureblue's fixes without anyone pushing.
   schedule:
