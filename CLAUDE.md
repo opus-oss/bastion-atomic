@@ -12,9 +12,12 @@ One `Containerfile`, one target per image:
 | --- | --- | --- | --- |
 | `generic` | `bastion-atomic` | amd64, arm64 | secureblue plus everything in `files/`. Runs anywhere secureblue does. |
 | `forge` | `bastion-atomic-forge` | amd64 | `generic` with a device-only linux-hardened kernel for one Framework 13 AMD 7040. Boots nowhere else, VMs included (no virtio). |
+| `vm` | `bastion-atomic-vm` | amd64, arm64 | `generic` with a virtual-hardware-only linux-hardened kernel (QEMU/KVM: UTM, libvirt), plus guest integration. Boots on no real hardware. |
 
-Other stages: `kernel` (builds forge's kernel in Fedora, keeps the compiler and the throwaway
-module-signing key out of the image) and `shelltheme` (recolours `gnome-shell-theme.gresource`).
+Other stages: `kernelsrc` (fetches and verifies linux-hardened once), `kernel` (forge's kernel) and
+`vmkernel` (the vm kernel, from allnoconfig plus `kernel/vm/*.config`), all in Fedora so the
+compiler and the throwaway module-signing key stay out of the images, and `shelltheme`
+(recolours `gnome-shell-theme.gresource`).
 
 ## Layout
 
@@ -25,7 +28,9 @@ module-signing key out of the image) and `shelltheme` (recolours `gnome-shell-th
 - `kernel/`: forge's kernel. `forge.config` is the device-only config from the earlier NixOS
   build, `fedora.config` is merged over it (what Fedora Atomic and secureblue need), and
   `configure.sh` fails the build if `make olddefconfig` drops any requested option. Source is a
-  sha256-pinned kernel.org tarball plus the signed linux-hardened patch.
+  sha256-pinned kernel.org tarball plus the signed linux-hardened patch. `vm/common.config` and
+  `vm/<arch>.config` are the vm kernel, merged over `make allnoconfig`, so anything not listed is
+  not compiled. `install.sh` swaps either kernel into an image and builds its initramfs.
 - `.github/workflows/build.yml`: builds each target per arch, joins arches into one manifest,
   attests, and signs with the `SIGNING_SECRET` key. Nightly at 05:00 UTC, on push to `main`, and
   test-only for pull requests.
@@ -85,6 +90,12 @@ module-signing key out of the image) and `shelltheme` (recolours `gnome-shell-th
   `adw-gtk3-dark` Flatpak theme (from a filtered Flathub remote; filters in
   `files/usr/share/bastion/flatpak-filters`). Qt 5 KeePassXC runs frameless.
 - **Bluetooth** is blocked by secureblue by default; `ujust set-bluetooth-modules on` lifts it.
+- **vm kernel:** linux-hardened turns unprivileged user namespaces off, which breaks bubblewrap
+  (Flatpak, oo7-daemon); `USER_NS_UNPRIVILEGED=y` leaves secureblue's SELinux policy deciding.
+  Fedora's modprobe.d pulls `snd-seq` in with `snd-pcm`. x86 selects `PERF_EVENTS`
+  unconditionally, so only arm64 drops it. A config change can be checked without CI: run
+  `kernel/configure.sh` on an allnoconfig tree (`ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-` for
+  arm64).
 
 ## On the running system
 
@@ -97,14 +108,13 @@ module-signing key out of the image) and `shelltheme` (recolours `gnome-shell-th
   `~/.config/bastion/first-login-apps.list`, at a user's first login, along with the per-user
   Opus theme files.
 
+
 ## Open work
 
-- A `vm` target: the generic image plus SELinux booleans for qemu-guest-agent's command and file
-  access (`virt_qemu_ga_run_unconfined`, `virt_qemu_ga_read_nonsecurity_files`), and a qcow2
-  per arch built by bootc-image-builder (pin it by digest), published as an OCI artifact and
-  signed. qemu-guest-agent and spice-vdagent already ship in the base, started by udev.
+- A qcow2 of the `vm` image per arch built by bootc-image-builder (pin it by digest), published
+  as an OCI artifact and signed.
 - Claude Desktop: Anthropic's Linux build is an official beta for Ubuntu and Debian only. The
   community `.rpm` from aaddrick/claude-desktop-debian repackages that build. Being tested in a
   VM before anything goes into an image.
-- Secure Boot with a MOK key that signs forge's kernel in CI (shim route; never replace the
+- Secure Boot with a MOK key that signs forge's and the vm image's kernels in CI (shim route; never replace the
   platform keys).
