@@ -166,13 +166,15 @@ EOF
     done < /etc/crypttab
 fi
 
-# --- What exists to write to the disk ---------------------------------------------------------------
+# --- What exists to write to the disk, and the boot chain wherever it is mounted from (fstab,
+# systemd-gpt-auto-generator, ostree-system-generator) ----------------------------------------
 for u in rpm-ostreed-automatic.timer rpm-ostreed-automatic.service upgrade-on-boot.service \
          bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service \
          ostree-finalize-staged.path ostree-finalize-staged.service bootloader-update.service \
          fstrim.timer fstrim.service \
          bastion-tripwire.timer bastion-tripwire.service \
-         bastion-amnesic-menu.service bastion-amnesic-menu-refresh.path boot.mount; do
+         bastion-amnesic-menu.service bastion-amnesic-menu-refresh.path \
+         boot.mount boot.automount boot-efi.mount boot-efi.automount efi.mount efi.automount; do
     mask "$u"
 done
 exit 0

@@ -22,21 +22,23 @@ if grep -qw bastion.amnesic /proc/cmdline; then
     say "boot 2: amnesic"
     cat /proc/cmdline; cat /etc/fstab; findmnt
     [[ -e /run/bastion-amnesic/active ]] || fail "/run/bastion-amnesic/active missing"
-    for m in /etc /var; do [[ $(findmnt -no FSTYPE "$m") == overlay ]] || fail "$m is not a RAM overlay"; done
+    # stat -f reports the filesystem actually on top; findmnt lists the stacked ones too.
+    for m in /etc /var; do [[ $(stat -f -c %T "$m") == overlayfs ]] || fail "$m is not a RAM overlay"; done
     findmnt -no OPTIONS /sysroot | tr , '\n' | grep -qx ro || fail "/sysroot is not read-only"
     findmnt -no OPTIONS /run/bastion-amnesic/disk | tr , '\n' | grep -qx ro || fail "disk not mounted read-only"
     for b in /sys/block/vd*; do
         [[ $(<"$b/ro") == 1 ]] || fail "$b is writable"
         for p in "$b"/vd*; do [[ $(<"$p/ro") == 1 ]] || fail "$p is writable"; done
     done
-    ! mountpoint -q /boot || fail "/boot is mounted"
+    for m in /boot /boot/efi /efi; do ! mountpoint -q "$m" || fail "$m is mounted"; done
+    [[ -z $(systemctl --failed --plain --no-legend) ]] || fail "failed units: $(systemctl --failed --plain --no-legend)"
     [[ $(getenforce) == Enforcing ]] || fail "SELinux is $(getenforce)"
     [[ -e $state/boot1 ]] || fail "boot 1's state is not visible"
     [[ $(systemctl is-enabled rpm-ostreed-automatic.timer 2>&1) == masked* ]] || fail "updates not masked"
     # Every disk filesystem in fstab other than /boot is RAM over a read-only lower layer.
     while read -r spec mp type _; do
         [[ -z $spec || $spec == \#* || $type == swap || $mp == / || $mp == /boot* ]] && continue
-        [[ $(findmnt -no FSTYPE "$mp") == overlay ]] || fail "$mp ($type) is not overlaid"
+        [[ $(stat -f -c %T "$mp") == overlayfs ]] || fail "$mp ($type) is not overlaid"
     done < /etc/fstab
     mkdir -p /var/home
     for m in "${markers[@]}"; do echo amnesic > "$m" || fail "cannot write $m"; done
