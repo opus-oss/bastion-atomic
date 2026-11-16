@@ -10,12 +10,11 @@
 ARG BASE=ghcr.io/secureblue/silverblue-main-hardened
 ARG TAG=latest
 
-# --- Kernel ------------------------------------------------------------------------------------
-# forge's device-only linux-hardened kernel from the NixOS build, with modules switched back on
-# and what Fedora Atomic needs added (kernel/fedora.config). Built in its own stage so the
-# compiler, the source tree and the throwaway module-signing key never reach the image: only
+# --- Kernel source -----------------------------------------------------------------------------
+# linux-hardened, verified and patched once, for both kernels below. Built in their own stages so
+# the compiler, the source tree and the throwaway module-signing key never reach an image: only
 # /out does.
-FROM quay.io/fedora/fedora:44 AS kernel
+FROM quay.io/fedora/fedora:44 AS kernelsrc
 ARG KERNEL_VERSION=6.18.56
 ARG HARDENED_VERSION=6.18.56-hardened1
 # Checked against Greg Kroah-Hartman's signature (647F28654894E3BD457199BE38DBBDC86092693E) when
@@ -40,8 +39,17 @@ RUN set -eux; \
     gpg --batch --status-fd 1 --verify "kernel/linux-hardened-v${HARDENED_VERSION}.patch.sig" \
       "kernel/linux-hardened-v${HARDENED_VERSION}.patch" | grep -q "VALIDSIG ${HARDENED_KEY} "; \
     tar -xf "linux-${KERNEL_VERSION}.tar.xz"; \
-    cd "linux-${KERNEL_VERSION}"; \
-    patch -s -p1 < "../kernel/linux-hardened-v${HARDENED_VERSION}.patch"; \
+    rm "linux-${KERNEL_VERSION}.tar.xz"; \
+    mv "linux-${KERNEL_VERSION}" linux; \
+    cd linux; \
+    patch -s -p1 < "../kernel/linux-hardened-v${HARDENED_VERSION}.patch"
+
+# --- forge's kernel ----------------------------------------------------------------------------
+# forge's device-only linux-hardened kernel from the NixOS build, with modules switched back on
+# and what Fedora Atomic needs added (kernel/fedora.config).
+FROM kernelsrc AS kernel
+RUN set -eux; \
+    cd linux; \
     bash ../kernel/configure.sh . ../kernel/forge.config ../kernel/fedora.config; \
     make -s -j"$(nproc)" bzImage modules; \
     kver="$(make -s kernelrelease)"; \
@@ -49,6 +57,30 @@ RUN set -eux; \
     make -s modules_install INSTALL_MOD_PATH=/out INSTALL_MOD_STRIP=1 DEPMOD=/bin/true; \
     rm -f "/out/lib/modules/${kver}/build" "/out/lib/modules/${kver}/source"; \
     cp arch/x86/boot/bzImage "/out/lib/modules/${kver}/vmlinuz"; \
+    cp .config "/out/lib/modules/${kver}/config"; \
+    cp System.map "/out/lib/modules/${kver}/System.map"
+
+# --- The vm image's kernel ---------------------------------------------------------------------
+# Virtual hardware only: virtio, QEMU's emulated USB/HDA/VGA, and the platform devices of QEMU's
+# arm64 `virt` and x86 q35 machines (UTM, libvirt, virt-manager). It starts from allnoconfig, so
+# whatever kernel/vm/*.config does not ask for is not compiled at all. Built natively on each
+# architecture's runner.
+FROM kernelsrc AS vmkernel
+RUN set -eux; \
+    case "$(uname -m)" in \
+      aarch64) frag=arm64; target=Image; image=arch/arm64/boot/Image ;; \
+      x86_64) frag=x86_64; target=bzImage; image=arch/x86/boot/bzImage ;; \
+      *) echo "no vm kernel config for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    cd linux; \
+    make -s allnoconfig; \
+    cp .config ../allnoconfig; \
+    bash ../kernel/configure.sh . ../allnoconfig ../kernel/vm/common.config "../kernel/vm/$frag.config"; \
+    make -s -j"$(nproc)" "$target" modules; \
+    kver="$(make -s kernelrelease)"; \
+    make -s modules_install INSTALL_MOD_PATH=/out INSTALL_MOD_STRIP=1 DEPMOD=/bin/true; \
+    rm -f "/out/lib/modules/${kver}/build" "/out/lib/modules/${kver}/source"; \
+    cp "$image" "/out/lib/modules/${kver}/vmlinuz"; \
     cp .config "/out/lib/modules/${kver}/config"; \
     cp System.map "/out/lib/modules/${kver}/System.map"
 
@@ -201,53 +233,27 @@ RUN set -eux; \
 # --target produces this one; the workflow names each target explicitly.
 FROM generic AS forge
 
-# Swap secureblue's kernel for the one built above. An ostree deployment boots whatever single
-# kernel is in /usr/lib/modules, with vmlinuz and initramfs.img beside its modules, so the old
-# packages go (--nodeps: kernel-tools and friends name them but work with any kernel; --noscripts:
-# their scriptlets call kernel-install, which has nothing to do in an image build) and the
-# initramfs is regenerated for the new one with secureblue's own dracut settings.
+# Swap secureblue's kernel for the one built above (kernel/install.sh has the details), with the
+# firmware its built-in drivers need in the initramfs.
 COPY --from=kernel /out/lib/modules/ /usr/lib/modules/
-COPY kernel/initramfs-firmware.txt /tmp/initramfs-firmware.txt
+COPY kernel/install.sh kernel/initramfs-firmware.txt /tmp/kernel/
 RUN set -eux; \
-    kver="$(ls /usr/lib/modules | grep -- '-bastion$')"; \
-    rpm -e --nodeps --noscripts $(rpm -qa --qf '%{NAME}\n' kernel kernel-core 'kernel-modules*'); \
-    for d in /usr/lib/modules/*; do [ "${d##*/}" = "$kver" ] || rm -rf "$d"; done; \
-    depmod -a "$kver"; \
-    # Built-in drivers probe before the root filesystem exists, so their firmware has to be in
-    # the initramfs. A missing file is a build error, not a black screen at the LUKS prompt.
-    fw=""; \
-    for f in $(grep -vE '^\s*(#|$)' /tmp/initramfs-firmware.txt); do \
-      found=""; \
-      for c in "/usr/lib/firmware/$f" "/usr/lib/firmware/$f.xz" "/usr/lib/firmware/$f.zst"; do \
-        [ -e "$c" ] && found="$c"; \
-      done; \
-      [ -n "$found" ] || { echo "firmware not found: $f" >&2; exit 1; }; \
-      fw="$fw $found"; \
-    done; \
-    rm /tmp/initramfs-firmware.txt; \
-    # --add ostree: the module only includes itself on request (check() returns 255), and without
-    # ostree-prepare-root the initramfs cannot mount the deployment. rpm-ostree asks for it when it
-    # builds an initramfs; a hand-run dracut has to ask too.
-    # --omit plymouth: plymouth.enable=0 (kargs.d) turns it off anyway; leaving it out of the
-    # initramfs keeps the image smaller and the LUKS prompt on the text console.
-    dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree --omit plymouth --install "$fw" \
-      -f "/usr/lib/modules/$kver/initramfs.img"; \
-    chmod 0600 "/usr/lib/modules/$kver/initramfs.img"; \
-    # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that
-    # what this machine cannot boot without made it in: the firmware, the LUKS unlock, and the
-    # step that mounts the ostree deployment.
-    lsinitrd -m "/usr/lib/modules/$kver/initramfs.img"; \
-    lsinitrd "/usr/lib/modules/$kver/initramfs.img" > /tmp/initramfs.list; \
-    for want in $fw /usr/lib/systemd/systemd-cryptsetup /usr/lib/ostree/ostree-prepare-root; do \
-      grep -qF " ${want#/}" /tmp/initramfs.list || { echo "missing from initramfs: $want" >&2; exit 1; }; \
-    done; \
-    rm /tmp/initramfs.list
+    bash /tmp/kernel/install.sh "$(ls /usr/lib/modules | grep -- '-bastion$')" /tmp/kernel/initramfs-firmware.txt; \
+    rm -r /tmp/kernel
 
 # --- VM image: ghcr.io/opus-oss/bastion-atomic-vm ----------------------------------------------------
-# The generic image, made for running as a guest. secureblue's kernel already has every virtio
-# driver, and qemu-guest-agent and spice-vdagent come with the base, started by udev when the VM has
-# their channels. What changes is what a VM is for: integrating with its host.
+# The generic image, made for running as a guest: the virtual-hardware-only kernel above in place
+# of secureblue's, which carries drivers for every machine Fedora supports. qemu-guest-agent and
+# spice-vdagent come with the base, started by udev when the VM has their channels. It boots under
+# QEMU/KVM (UTM, libvirt) and nowhere else.
 FROM generic AS vm
+
+# Virtual devices need no firmware, so the initramfs carries none.
+COPY --from=vmkernel /out/lib/modules/ /usr/lib/modules/
+COPY kernel/install.sh /tmp/kernel/
+RUN set -eux; \
+    bash /tmp/kernel/install.sh "$(ls /usr/lib/modules | grep -- '-bastion-vm$')"; \
+    rm -r /tmp/kernel
 
 # Xwayland back on (vm/ has the drop-in), for spice-vdagent's clipboard and display resizing.
 COPY vm/ /
