@@ -41,6 +41,14 @@ jobs:
             target: forge
             arch: amd64
             runner: ubuntu-24.04
+          - image: bastion-atomic-vm
+            target: vm
+            arch: amd64
+            runner: ubuntu-24.04
+          - image: bastion-atomic-vm
+            target: vm
+            arch: arm64
+            runner: ubuntu-24.04-arm
     permissions:
       contents: read
       # Needed to push to ghcr.io as GITHUB_TOKEN; no personal token or secret required.
@@ -97,6 +105,8 @@ jobs:
             arches: amd64 arm64
           - image: bastion-atomic-forge
             arches: amd64
+          - image: bastion-atomic-vm
+            arches: amd64 arm64
     permissions:
       contents: read
       packages: write

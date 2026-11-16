@@ -238,3 +238,22 @@ RUN set -eux; \
       grep -qF " ${want#/}" /tmp/initramfs.list || { echo "missing from initramfs: $want" >&2; exit 1; }; \
     done; \
     rm /tmp/initramfs.list
+
+# --- VM image: ghcr.io/opus-oss/bastion-atomic-vm ----------------------------------------------------
+# The generic image, made for running as a guest. secureblue's kernel already has every virtio
+# driver, and qemu-guest-agent and spice-vdagent come with the base, started by udev when the VM has
+# their channels. What changes is what a VM is for: integrating with its host.
+FROM generic AS vm
+
+# Xwayland back on (vm/ has the drop-in), for spice-vdagent's clipboard and display resizing.
+COPY vm/ /
+
+# Let the host run commands and read files through qemu-guest-agent (guest-exec, guest-file-*).
+# SELinux confines the agent and both booleans default off; -N sets them in the policy store
+# without loading it, since there is no running kernel policy in a build.
+RUN set -eux; \
+    semanage boolean -N -m --on virt_qemu_ga_run_unconfined; \
+    semanage boolean -N -m --on virt_qemu_ga_read_nonsecurity_files; \
+    # -C lists only locally customised booleans, so both must be there.
+    semanage boolean -l -C; \
+    test "$(semanage boolean -l -C | grep -cE '^virt_qemu_ga_(run_unconfined|read_nonsecurity_files) ')" = 2
