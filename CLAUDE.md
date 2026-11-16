@@ -34,7 +34,7 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
 - `.github/workflows/build.yml`: builds each target per arch, joins arches into one manifest,
   attests, and signs with the `SIGNING_SECRET` key. Nightly at 05:00 UTC, on push to `main`, and
   test-only for pull requests.
-- `install.sh`: switches an existing secureblue or Silverblue install to the generic image
+- `install.sh [generic|vm|forge]`: switches a stock Silverblue or secureblue install to an image
   (trusts the key first, then does a signed rebase).
 - `whonix.sh`: verified Whonix install for system libvirt (`run0 bash whonix.sh`).
 
@@ -71,6 +71,10 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
   `verify-provenance.sh`, which only knew `ghcr.io/secureblue/*`. That blocked every update for
   weeks. The image patches it to send `ghcr.io/opus-oss/*` to `bastion-verify-provenance` (cosign
   against the pinned key), and the build fails if the patch stops applying.
+- **Signed rebase from stock Silverblue:** its `policy.json` defaults to `insecureAcceptAnything`,
+  and rpm-ostree refuses `ostree-image-signed:` under such a policy. `install.sh` writes a
+  reject-by-default copy to `/etc` with the bootstrap marker; `bastion-policy-cleanup` removes it on
+  first boot.
 - **Fedora 45** has no `cosign` package, so it comes from `gcr.io/projectsigstore/cosign`, pinned by
   digest. secureblue ships `policy.json` in `/usr/share/containers` from Fedora 45 on; the build
   handles both locations.

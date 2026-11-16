@@ -14,33 +14,71 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue, an
   - secureblue hardens Silverblue with its own kernel build, SELinux confinement, hardened_malloc, run0 and USBGuard.
   - bastion hardens secureblue further with DNS over HTTPS only, an nftables firewall and a clock set from HTTPS servers.
 - **How it's built**
-  - The image starts from `ghcr.io/secureblue/silverblue-main-hardened` and adds only what's in this repo.
-  - GitHub Actions rebuilds and signs it every night for amd64 and arm64, which brings in secureblue's fixes without anyone merging them by hand.
+  - Every image starts from `ghcr.io/secureblue/silverblue-main-hardened` and adds only what's in this repo.
+  - GitHub Actions rebuilds and signs them every night, which brings in secureblue's fixes without anyone merging them by hand.
   - Nothing is compiled or layered on the installed machine.
+
+## Images
+
+| Image | Arch | Kernel | Boots on |
+| --- | --- | --- | --- |
+| `ghcr.io/opus-oss/bastion-atomic` | amd64, arm64 | secureblue's | Anything secureblue runs on |
+| `ghcr.io/opus-oss/bastion-atomic-vm` | amd64, arm64 | linux-hardened, virtual hardware only | QEMU/KVM guests: UTM (QEMU backend), libvirt, virt-manager |
+| `ghcr.io/opus-oss/bastion-atomic-forge` | amd64 | linux-hardened, one device only | One Framework 13 AMD 7040, nothing else |
+
+- **bastion-atomic-vm**
+  - The kernel is built from `make allnoconfig` plus `kernel/vm/*.config`, so drivers for real hardware are never compiled. It carries virtio, QEMU's emulated USB, HDA and VGA, and the platform devices of the arm64 `virt` and x86 `q35` machines.
+  - qemu-guest-agent and spice-vdagent start when the VM has their channels. Xwayland is back on for spice-vdagent's clipboard and display resizing.
+  - Secure Boot must be off in the VM's firmware: the kernel isn't signed for it yet.
+  - Against secureblue's arm64 kernel:
+
+    | | secureblue | bastion-atomic-vm |
+    | --- | --- | --- |
+    | Modules | 5,003 | 36 |
+    | Kernel text symbols | 84,198 | 40,436 |
+    | Syscalls | 419 | 349 |
+    | kernel-hardening-checker fails | 72 | 49 |
+- **bastion-atomic-forge**
+  - The device-only kernel config from the earlier NixOS build, with what Fedora Atomic and secureblue need merged over it. No virtio, so it doesn't boot in a VM either.
+  - Secure Boot must be off: the kernel isn't signed for it yet.
 
 ## Install
 
-- **Requirements**
-  - You need a fresh [secureblue](https://secureblue.dev/install) install of the GNOME (Silverblue) variant.
+You start from a stock [Fedora Silverblue](https://fedoraproject.org/atomic-desktops/silverblue/download) install (or an existing secureblue one) and rebase it. Use the aarch64 Silverblue release on Apple Silicon and other arm64 machines.
+
 - **Steps**
-  - Run the installer, then reboot:
+  - Clone the repo and run the installer with the image you want, then reboot:
     ```sh
     git clone https://github.com/opus-oss/bastion-atomic.git
     cd bastion-atomic
-    run0 bash install.sh
+    run0 bash install.sh          # bastion-atomic
+    run0 bash install.sh vm       # bastion-atomic-vm
+    run0 bash install.sh forge    # bastion-atomic-forge
     ```
+  - The installer refuses `vm` outside a VM or with Secure Boot on, and `forge` anywhere but bare-metal x86_64 with Secure Boot off.
 - **What the installer does**
-  - It adds this repo's signing key to the system's container policy before it pulls anything.
-  - It then rebases with `ostree-image-signed:`, which refuses any image that isn't signed with that key.
-  - Your secureblue deployment stays in the boot menu as a way back.
+  - It adds this repo's signing key and `registries.d` entry to the system's container policy before it pulls anything.
+  - It rebases with `ostree-image-signed:`, which refuses any image that isn't signed with that key. The first pull is verified too: there's no unsigned rebase step.
+  - Stock Silverblue's policy accepts any image by default, and rpm-ostree refuses a signed rebase under that policy. The installer works around it with a temporary policy in `/etc` that rejects by default. Until the reboot, `podman` and `toolbox` can't pull unsigned images. On first boot the image deletes that copy, and secureblue's policy with the key added takes over.
+  - Your current deployment stays in the boot menu as a way back.
+- **After the first boot, coming from Silverblue**
+  - Run `ujust set-kargs-hardening`: secureblue's hardening kernel arguments aren't applied by a rebase.
+  - `bastion-atomic` only, with Secure Boot on: secureblue signs its kernel with its own key. If the first boot stops at a Secure Boot error, turn Secure Boot off for that boot, run `ujust enroll-secureblue-secure-boot-key`, reboot, choose "Enroll MOK" (password `secureblue`), then turn Secure Boot back on.
+  - Skip `ujust dns-selector`: bastion replaces secureblue's DNS (see below).
 - **In a virtual machine**
-  - The standard image is built for both amd64 and arm64, and rpm-ostree pulls the one that matches the machine.
-  - On an Apple Silicon Mac, create an ARM64 virtual machine in UTM and install Fedora Silverblue's aarch64 release in it.
-  - Then follow secureblue's [ARM64 instructions](https://secureblue.dev/install) to switch it to secureblue, and run the installer above.
-  - The arm64 image builds in CI, but nobody has booted it in a virtual machine yet.
+  - Use `bastion-atomic-vm` under UTM's QEMU backend (not Apple Virtualization) or libvirt. `bastion-atomic` also works in a VM, with secureblue's full kernel.
+  - Secure Boot must be off in the VM firmware. Check from the guest with `mokutil --sb-state`. In libvirt, pick an OVMF/AAVMF firmware without `secboot` or enrolled keys.
+  - rpm-ostree pulls the arm64 or amd64 build to match the machine.
+- **Switching between images**
+  - From one bastion image to another, signing is already set up, so a rebase is enough:
+    ```sh
+    run0 bash -c 'rpm-ostree rebase ostree-image-signed:docker://ghcr.io/opus-oss/bastion-atomic-vm:latest'
+    ```
 - **Updates**
   - New builds arrive as ordinary `rpm-ostree upgrade`s and apply on reboot.
   - `rpm-ostree rollback` returns to the previous build.
+- **Checking a signature yourself**
+  - `cosign verify --new-bundle-format=false --key cosign.pub ghcr.io/opus-oss/<image>:latest`
 
 ## What bastion adds to secureblue
 
@@ -131,9 +169,10 @@ bastion is a hardened Fedora Atomic desktop image built on top of secureblue, an
 ```
 Containerfile          image build, including the GNOME Shell theme stage
 .github/workflows/     nightly build, push, provenance attestation, cosign signature
-install.sh             adds the signing key and rebases secureblue onto bastion
+install.sh             adds the signing key and rebases Silverblue or secureblue onto an image
 whonix.sh              verified Whonix install
-kernel/                linux-hardened patch, signature and config for a device-specific kernel build
+kernel/                linux-hardened patch and signature, forge.config, vm/*.config, install.sh
+vm/                    files only the vm image gets
 files/                 copied to / as-is
   etc/                 DNS, firewall, sysctls, blocked modules, timesync, dconf, signing policy
   usr/                 timesync, systemd units, kernel arguments, theme
