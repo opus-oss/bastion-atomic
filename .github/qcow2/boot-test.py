@@ -4,9 +4,11 @@
 The image boots with loglevel=0 and no serial console, so the guest agent is the only way in.
 It is started by udev once systemd is up, and the vm image lets it run commands (guest-exec).
 
+Checks: gdm started (serial log), one deployment tracking the signed image, SELinux enforcing.
+
 usage: boot-test.py <arch: amd64|arm64> <disk.qcow2> <expected origin> <timeout seconds>
 """
-import base64, json, os, shutil, socket, subprocess, sys, time
+import base64, json, os, re, shutil, socket, subprocess, sys, time
 
 arch, disk, want_origin, timeout = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 work = os.path.abspath("boot-test")
@@ -110,15 +112,18 @@ try:
 
     print("kernel:", sh("uname -r"))
 
-    # gdm running is as far as a headless check can see the desktop come up. systemd keeps an
-    # invocation link per running unit under /run/systemd/units.
+    # gdm starting is as far as a headless check can see the desktop come up. The agent cannot
+    # ask systemd, so look for the process, or for systemd's line on the serial console (x86 only:
+    # the disk's console=ttyS0 is not the arm64 virt machine's UART).
     gdm, end = False, time.time() + 900
     while time.time() < end:
-        if sh("test -e /run/systemd/units/invocation:gdm.service && echo up") == "up":
+        log = re.sub(rb"\x1b\[[0-9;]*m", b"", open(f"{work}/serial.log", "rb").read())
+        if b"Started gdm.service" in log or sh("pgrep -x gdm >/dev/null && echo up") == "up":
             gdm = True
             break
         time.sleep(10)
-    print("gdm:", "running" if gdm else "not running")
+    print("gdm:", "started" if gdm else "not started")
+    print("gdm processes:", sh("pgrep -a gdm | head -5") or "none visible")
     if not gdm:
         failed.append("gdm never started")
 
