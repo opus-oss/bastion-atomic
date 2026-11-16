@@ -41,15 +41,16 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
 ## Working on it
 
 - **Builds happen in CI only.** Rootless podman does not work on secureblue (unprivileged user
-  namespaces are off), so test changes by pushing, or through a pull request when a change is
-  risky: PRs build without publishing.
+  namespaces are off), so test changes by pushing.
+- **Push directly to `main`. No pull requests** (the owner's rule). A push to `main` builds and
+  publishes, so check what you can locally first (`bash -n`, `kernel/configure.sh`).
 - **Verify before deploying.** Anything you claim about an image, check against the published
   image itself. For example, extract a file from a layer:
   `skopeo inspect` for the digest, then pull blobs from `ghcr.io/v2/opus-oss/<image>/blobs/<digest>`
   with an anonymous token from `https://ghcr.io/token?scope=repository:opus-oss/<image>:pull`.
 - **Signatures:** `cosign verify --new-bundle-format=false --key cosign.pub ghcr.io/opus-oss/<image>:latest`.
   cosign 3 needs the flag to read the classic format CI produces.
-- **Commits and PRs:** no `Co-Authored-By: Claude` trailers and no "Generated with Claude Code"
+- **Commits:** no `Co-Authored-By: Claude` trailers and no "Generated with Claude Code"
   lines. Commit as `opus-oss <304087485+opus-oss@users.noreply.github.com>`.
 - **Root on a secureblue machine:** collect every privileged step into one `run0 bash -c '...'`
   for the user to run once, rather than triggering a password prompt per command. Run binaries
