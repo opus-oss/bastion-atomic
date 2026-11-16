@@ -84,16 +84,20 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       # btrfs root, as on a Silverblue install; the image does not name a default filesystem.
+      # The build container is the same image with containers-storage allowed (see its file).
       - name: Build disk
         run: |
           set -euo pipefail
           mkdir -p output
+          sudo podman build -q -t localhost/bastion-bib-build --build-arg SOURCE="$IMAGE:latest" \
+            -f .github/qcow2/build-container.Containerfile .github/qcow2
           sudo podman run --rm --privileged --pull=newer \
             --security-opt label=type:unconfined_t \
             -v "$PWD/.github/qcow2/config.toml:/config.toml:ro" \
             -v "$PWD/output:/output" \
             -v /var/lib/containers/storage:/var/lib/containers/storage \
-            "$BIB" --type raw --rootfs btrfs --progress verbose "$IMAGE:latest"
+            "$BIB" --type raw --rootfs btrfs --progress verbose \
+            --build-container localhost/bastion-bib-build "$IMAGE:latest"
           sudo podman image inspect --format 'bootc-image-builder {{.Digest}}' "$BIB"
           sudo podman rmi -af >/dev/null
           ls -ls output/image
