@@ -155,8 +155,11 @@ try:
     if not gdm:
         failed.append("the GNOME screen never came up")
         print(sh("ls -l /dev/dri; cat /proc/fb; ls /sys/class/drm"))
-        print(sh("journalctl -b --no-pager -o short-monotonic -u gdm -u display-manager | tail -40"))
-        print(sh("journalctl -b --no-pager -o short-monotonic -p warning | tail -60"))
+        # journalctl is closed to the agent; the journal files themselves keep short messages as
+        # plain text, which is enough to see why the greeter did not draw.
+        print(sh("cat /var/log/journal/*/system.journal /run/log/journal/*/system.journal 2>&1 "
+                 "| tr -c '[:print:]' '\\n' | grep -aiE 'gdm|gnome-shell|mutter|wayland|xwayland|drm|llvmpipe|segfault|core dump|avc' "
+                 "| grep -v '^_' | uniq | tail -120", wait=300))
 
     deployments = sh("ls -d /sysroot/ostree/deploy/*/deploy/*.origin").split()
     print("deployments:", deployments)
