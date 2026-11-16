@@ -102,35 +102,39 @@ try:
         sys.exit(f"guest agent did not answer within {timeout}s")
     print(f"guest agent up after {time.time() - start:.0f}s", flush=True)
 
-    # Let boot settle before judging it; degraded is reported, not fatal.
-    _, state, _ = run("/usr/bin/systemctl", "is-system-running", "--wait", wait=900)
-    print("system state:", state.strip())
-    print(run("/usr/bin/systemctl", "--failed", "--no-legend")[1] or "no failed units")
-    print(run("/usr/bin/uname", "-r")[1].strip())
+    # The agent runs confined: plain binaries (sh, cat) are allowed, but SELinux refuses it a
+    # transition into rpm-ostree's or systemctl's domains, so everything here is read from files.
+    def sh(script, wait=120):
+        rc, out, err = run("/usr/bin/sh", "-c", script, wait=wait)
+        return out.strip() + (("\n" + err.strip()) if err.strip() else "")
 
-    rc, out, err = run("/usr/bin/rpm-ostree", "status", "--json", "--booted")
-    if rc != 0:
-        failed.append(f"rpm-ostree status failed: {err}")
-    else:
-        booted = [d for d in json.loads(out)["deployments"] if d.get("booted")][0]
-        origin = booted.get("container-image-reference")
-        print("origin:", origin)
-        if origin != want_origin:
-            failed.append(f"origin is {origin}, want {want_origin}")
+    print("kernel:", sh("uname -r"))
 
-    enforce = run("/usr/sbin/getenforce")[1].strip()
-    print("SELinux:", enforce)
-    if enforce != "Enforcing":
-        failed.append(f"SELinux is {enforce}")
+    # gdm running is as far as a headless check can see the desktop come up. systemd keeps an
+    # invocation link per running unit under /run/systemd/units.
+    gdm, end = False, time.time() + 900
+    while time.time() < end:
+        if sh("test -e /run/systemd/units/invocation:gdm.service && echo up") == "up":
+            gdm = True
+            break
+        time.sleep(10)
+    print("gdm:", "running" if gdm else "not running")
+    if not gdm:
+        failed.append("gdm never started")
 
-    gdm = run("/usr/bin/systemctl", "is-active", "gdm.service")[1].strip()
-    print("gdm:", gdm)
-    if gdm != "active":
-        failed.append(f"gdm is {gdm}")
+    deployments = sh("ls -d /sysroot/ostree/deploy/*/deploy/*.origin").split()
+    print("deployments:", deployments)
+    origin = sh("sed -n 's/^container-image-reference=//p' /sysroot/ostree/deploy/*/deploy/*.origin")
+    print("origin:", origin)
+    if len(deployments) != 1 or origin != want_origin:
+        failed.append(f"origin is {origin!r} ({len(deployments)} deployments), want {want_origin}")
 
-    # Informational: does the signed update path reach the registry from inside the guest?
-    rc, out, err = run("/usr/bin/rpm-ostree", "upgrade", "--check", wait=600)
-    print(f"rpm-ostree upgrade --check: exit {rc}\n{out}{err}")
+    enforce = sh("cat /sys/fs/selinux/enforce")
+    print("SELinux enforcing:", enforce)
+    if enforce != "1":
+        failed.append(f"SELinux enforce is {enforce!r}")
+
+    print("cmdline:", sh("cat /proc/cmdline"))
 finally:
     try:
         qga({"execute": "guest-shutdown"}, wait=5)
