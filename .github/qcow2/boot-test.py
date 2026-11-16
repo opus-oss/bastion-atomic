@@ -4,7 +4,7 @@
 The image boots with loglevel=0 and no serial console, so the guest agent is the only way in.
 It is started by udev once systemd is up, and the vm image lets it run commands (guest-exec).
 
-Checks: gdm started (serial log), one deployment tracking the signed image, SELinux enforcing.
+Checks: GNOME on screen, one deployment tracking the signed image, SELinux enforcing.
 
 usage: boot-test.py <arch: amd64|arm64> <disk.qcow2> <expected origin> <timeout seconds>
 """
@@ -45,6 +45,7 @@ cmd = [qemu, *machine, *cpu, "-m", "4096", "-smp", str(os.cpu_count() or 2),
        "-device", "virtio-serial-pci",
        "-chardev", f"socket,id=qga,path={sock},server=on,wait=off",
        "-device", "virtserialport,chardev=qga,name=org.qemu.guest_agent.0",
+       "-qmp", f"unix:{work}/qmp.sock,server=on,wait=off",
        "-serial", f"file:{work}/serial.log"]
 vm = subprocess.Popen(cmd)
 
@@ -88,6 +89,30 @@ def run(*argv, wait=120):
     raise TimeoutError(" ".join(argv))
 
 
+def screen_colours():
+    """Take a screendump through QMP; return how many colours it has (0 if none yet)."""
+    out = os.path.join(work, "screen.ppm")
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(30)
+        s.connect(os.path.join(work, "qmp.sock"))
+        f = s.makefile("rwb")
+        f.readline()  # greeting
+        for cmd in ({"execute": "qmp_capabilities"},
+                    {"execute": "screendump", "arguments": {"filename": out}}):
+            f.write(json.dumps(cmd).encode() + b"\n"); f.flush()
+            while True:
+                reply = json.loads(f.readline())
+                if "return" in reply or "error" in reply:
+                    break
+    if not os.path.exists(out):
+        return 0
+    data = open(out, "rb").read()
+    # P6 header: magic, width height, maxval, then RGB triplets.
+    parts = data.split(b"\n", 3)
+    pixels = parts[3]
+    return len({pixels[i:i + 3] for i in range(0, len(pixels) - 2, 3 * 97)})
+
+
 failed = []
 try:
     start, up = time.time(), False
@@ -112,20 +137,23 @@ try:
 
     print("kernel:", sh("uname -r"))
 
-    # gdm starting is as far as a headless check can see the desktop come up. The agent cannot
-    # ask systemd, so look for the process, or for systemd's line on the serial console (x86 only:
-    # the disk's console=ttyS0 is not the arm64 virt machine's UART).
-    gdm, end = False, time.time() + 900
+    # A drawn GNOME screen (Initial Setup, from gdm) is as far as a headless check can see the
+    # desktop come up. The agent cannot ask systemd or see other processes, and the arm64 serial
+    # console stays quiet, so look at the screen: a text console or blank framebuffer has a
+    # handful of colours, GNOME's antialiased UI has hundreds.
+    gdm, colours, end = False, 0, time.time() + 900
     while time.time() < end:
-        log = re.sub(rb"\x1b\[[0-9;]*m", b"", open(f"{work}/serial.log", "rb").read())
-        if b"Started gdm.service" in log or sh("pgrep -x gdm >/dev/null && echo up") == "up":
+        try:
+            colours = screen_colours()
+        except (OSError, ValueError) as e:
+            print("screendump:", e)
+        if colours > 64:
             gdm = True
             break
-        time.sleep(10)
-    print("gdm:", "started" if gdm else "not started")
-    print("gdm processes:", sh("pgrep -a gdm | head -5") or "none visible")
+        time.sleep(20)
+    print(f"screen: {colours} colours sampled, desktop {'up' if gdm else 'not up'}")
     if not gdm:
-        failed.append("gdm never started")
+        failed.append("the GNOME screen never came up")
 
     deployments = sh("ls -d /sysroot/ostree/deploy/*/deploy/*.origin").split()
     print("deployments:", deployments)

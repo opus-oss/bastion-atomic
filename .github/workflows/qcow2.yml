@@ -150,6 +150,14 @@ jobs:
         if: failure()
         run: cat boot-test/serial.log 2>/dev/null || true
 
+      - name: Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screen-${{ matrix.arch }}
+          path: boot-test/screen.ppm
+          if-no-files-found: ignore
+
       # Tags: <arch> follows the newest disk, <arch>-<image digest> keeps each one addressable.
       - name: Publish
         if: github.ref == 'refs/heads/main'
