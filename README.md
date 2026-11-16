@@ -20,55 +20,31 @@ run0 bash install.sh vm       # bastion-atomic-vm     QEMU/KVM guest (UTM QEMU b
 run0 bash install.sh forge    # bastion-atomic-forge  Framework 13 AMD 7040 only, amd64
 ```
 
-Reboot. Then, if you came from Silverblue: `ujust set-kargs-hardening`.
+Reboot. Coming from Silverblue, also run `ujust set-kargs-hardening`.
 
-- `vm` and `forge`: Secure Boot **off** (kernels not signed yet). The installer refuses otherwise.
-- `bastion-atomic` with Secure Boot on: if the first boot fails verification, boot once with it off, run `ujust enroll-secureblue-secure-boot-key`, reboot, Enroll MOK (password `secureblue`), turn it back on.
-- Rebase is signed (`ostree-image-signed:`) from the first pull. Your old deployment stays in the boot menu.
 - Switch image: `run0 bash -c 'rpm-ostree rebase ostree-image-signed:docker://ghcr.io/opus-oss/bastion-atomic-vm:latest'`
 - Update: `rpm-ostree upgrade`. Undo: `rpm-ostree rollback`.
-- Verify: `cosign verify --new-bundle-format=false --key cosign.pub ghcr.io/opus-oss/<image>:latest`
 
-## Hardening
+## Features
 
-**bastion on top of secureblue**
+- [x] **Minimal virt-only kernel** (`bastion-atomic-vm`): linux-hardened built from `allnoconfig`, so only virtual hardware exists in it. Modules 5,003 → 36, kernel text symbols 84,198 → 40,436, syscalls 419 → 349, kernel-hardening-checker fails 72 → 49.
+- [x] **Device-only kernel** (`bastion-atomic-forge`): linux-hardened compiled for one Framework 13 AMD 7040 and nothing else.
+- [x] **Verified kernel source**: sha256-pinned kernel.org tarball, linux-hardened patch checked against its release key. Compiler and module-signing key never reach the image.
+- [x] **Signed from build to boot**: cosign-signed images, GitHub build-provenance attestation, signature checked on install and every update. Even the first rebase from stock Silverblue is verified.
+- [x] **Persistence tripwire**: `bastion-tripwire` baselines everything that survives a reboot (`/etc`, `/var`, `/boot`, EFI boot entries, shell rc files, autostart, systemd user units, SSH keys) and flags SELinux off, unsigned origin, layered packages, tampered `/boot`, setuid outside `/usr`. Runs at boot and daily; findings become desktop notifications.
+- [x] **No plaintext DNS**: dnscrypt-proxy (DoH on 443) is the only resolver; DHCP DNS ignored; port 53/5353/5355 out is rejected so nothing routes around it.
+- [x] **Default-deny firewall**: nftables, all inbound dropped, no ping, no forwarding except libvirt.
+- [x] **No NTP**: clock set from HTTPS `Date` headers, moved only when 3 of 5 independent pools agree.
+- [x] **Survives rebases**: services enabled from `/usr`, replaced services held off, so a machine's old `/etc` can't silently turn the firewall or resolver off.
+- [x] **Nightly rebuilds** pick up secureblue fixes; the build fails rather than ship if a patch to upstream stops applying.
+- [x] **Verified Whonix** for libvirt (`whonix.sh`, signing key pinned by fingerprint).
+- [x] Stricter than secureblue: `ptrace_scope=2`; Intel ME, `sp5100_tco`, `pcspkr`, webcam modules blocked.
+- [x] Opus theme across GNOME Shell, libadwaita, GTK3, Ptyxis; first-login app installer.
+- [ ] **Amnesic boot**: read-only disk, changes held in RAM. Not built yet.
+- [ ] **USB dead-man switch** that wipes the LUKS key slots. Not built yet.
+- [ ] Signed qcow2 of the vm image.
 
-- [x] DNS over HTTPS only: dnscrypt-proxy on loopback (Quad9, Cloudflare, Mullvad), DHCP DNS ignored
-- [x] nftables firewall: drop all inbound, no ping, no forwarding except libvirt, plaintext DNS out (53/5353/5355) rejected
-- [x] No NTP: clock set from HTTPS `Date` headers, 3 of 5 independent pools must agree
-- [x] Signed images (cosign) checked on every pull, plus GitHub build-provenance attestation
-- [x] secureblue's updaters accept these images (provenance check patched to the pinned key)
-- [x] `ptrace_scope=2` (secureblue: 1)
-- [x] Extra blocked modules: `mei`, `mei-me`, `sp5100_tco`, `pcspkr`, `uvcvideo` (webcam off outright)
-- [x] `bastion-tripwire`: daily diff of `/etc`, `/var`, `/boot`, EFI entries, homes; flags SELinux off, unsigned origin, layered packages, setuid outside `/usr`
-- [x] Text-only boot (`plymouth.enable=0`)
-- [x] Verified Whonix install for libvirt (`whonix.sh`)
-- [x] Opus theme (GNOME Shell, libadwaita, GTK3, Ptyxis), first-login app installer
-- [ ] USB dead-man switch that wipes LUKS key slots
-- [ ] Amnesic boot entry (read-only disk, changes in RAM)
-- [ ] Secure Boot MOK key for the vm and forge kernels
-- [ ] Signed qcow2 of the vm image
-
-**bastion-atomic-vm kernel** (linux-hardened from `allnoconfig`; only virtual hardware compiled in)
-
-| | secureblue kernel | vm kernel |
-| --- | --- | --- |
-| Modules | 5,003 | 36 |
-| Kernel text symbols | 84,198 | 40,436 |
-| Syscalls | 419 | 349 |
-| kernel-hardening-checker fails | 72 | 49 |
-
-**bastion-atomic-forge kernel**: linux-hardened, device-only config for one Framework 13 AMD 7040. No virtio.
-
-**From secureblue** ([features](https://secureblue.dev/features), not this repo's work)
-
-- [x] Hardened, re-signed kernel; 37 kargs (`lockdown=confidentiality`, `module.sig_enforce=1`, `init_on_free=1`, `mitigations=auto,nosmt`, ...)
-- [x] hardened_malloc system-wide, Flatpaks included
-- [x] SELinux confinement, unprivileged user namespaces restricted
-- [x] No sudo/su/pkexec (`run0`), setuid stripped from `/usr`
-- [x] Xwayland, thumbnailers, user GNOME extensions off
-- [x] MAC randomisation, 24 h lockout after 50 failed logins, USBGuard (`ujust setup-usbguard`)
-- [x] Container policy rejects unsigned images; Flathub verified apps only
+Underneath is [secureblue](https://secureblue.dev/features): hardened_malloc, SELinux confinement, `run0` instead of sudo, setuid stripped, restricted user namespaces, hardening kargs and sysctls.
 
 ## Limitations
 
