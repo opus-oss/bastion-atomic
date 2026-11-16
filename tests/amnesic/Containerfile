@@ -5,3 +5,6 @@ FROM ${IMAGE}
 COPY guest-test /usr/libexec/bastion-amnesic-test
 COPY bastion-amnesic-test.service /usr/lib/systemd/system/bastion-amnesic-test.service
 RUN ln -s ../bastion-amnesic-test.service /usr/lib/systemd/system/multi-user.target.wants/bastion-amnesic-test.service
+# bootc-image-builder runs `bootc install` in this image and hands it the image from
+# containers-storage, a transport the image's policy.json rejects. Test disk only.
+RUN python3 -c 'import json; p = "/usr/share/containers/policy.json"; d = json.load(open(p)); d["transports"]["containers-storage"] = {"": [{"type": "insecureAcceptAnything"}]}; json.dump(d, open("/etc/containers/policy.json", "w"), indent=2)'
