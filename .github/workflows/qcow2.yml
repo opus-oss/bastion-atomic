@@ -76,8 +76,13 @@ jobs:
         id: src
         run: |
           set -euo pipefail
-          digest=$(skopeo inspect --override-arch ${{ matrix.arch }} --format '{{.Digest}}' "docker://$IMAGE:latest")
-          cosign verify --key cosign.pub "$IMAGE@$digest" >/dev/null
+          # build.yml moves :latest before it signs, so a fresh image can be briefly unsigned.
+          for try in $(seq 20); do
+            digest=$(skopeo inspect --override-arch ${{ matrix.arch }} --format '{{.Digest}}' "docker://$IMAGE:latest")
+            cosign verify --key cosign.pub "$IMAGE@$digest" >/dev/null && break
+            [ "$try" = 20 ] && { echo "::error::$IMAGE@$digest is not signed"; exit 1; }
+            sleep 60
+          done
           echo "verified $IMAGE@$digest"
           sudo podman pull -q --arch ${{ matrix.arch }} "$IMAGE@$digest"
           sudo podman tag "$IMAGE@$digest" "$IMAGE:latest"
