@@ -152,11 +152,15 @@ RUN set -eux; \
     # ghcr.io/opus-oss/* to a cosign check against the pinned key; other references keep
     # secureblue's handling. If the script changes shape upstream, stop the build rather than ship
     # an updater that refuses everything again.
-    vp=/usr/libexec/secureblue/verify-provenance.sh; \
-    grep -q "^    ghcr.io/secureblue/\*)$" "$vp"; \
-    sed -i 's|^    ghcr.io/secureblue/\*)$|    ghcr.io/opus-oss/*)\n        exec /usr/libexec/bastion-verify-provenance "${image_ref}"\n        ;;\n&|' "$vp"; \
-    grep -q 'exec /usr/libexec/bastion-verify-provenance' "$vp"; \
-    bash -n "$vp"; \
+    # Fedora 45 bases call it verify-provenance and no longer indent the case arms; older ones had
+    # verify-provenance.sh. Patch whichever exists, and fail if none does or the patch misses.
+    n=0; for vp in /usr/libexec/secureblue/verify-provenance /usr/libexec/secureblue/verify-provenance.sh; do \
+      [ -e "$vp" ] || continue; n=$((n+1)); \
+      grep -qE '^[[:space:]]*ghcr\.io/secureblue/\*\)$' "$vp"; \
+      sed -i -E 's|^([[:space:]]*)ghcr\.io/secureblue/\*\)$|\1ghcr.io/opus-oss/*)\n\1    exec /usr/libexec/bastion-verify-provenance "${image_ref}"\n\1    ;;\n&|' "$vp"; \
+      grep -q 'exec /usr/libexec/bastion-verify-provenance' "$vp"; \
+      bash -n "$vp"; \
+    done; [ "$n" -gt 0 ]; \
     \
     # --- Persistence tripwire --------------------------------------------------------------------
     # Root check after boot and daily; a per-user timer turns its findings into a notification.

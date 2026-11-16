@@ -10,7 +10,13 @@ set -euo pipefail
 ref=$1
 key=/etc/pki/containers/opus-oss.pub
 
-full_ref=$(crane digest --full-ref "$ref")
+# A reference may arrive with or without a digest. Without one, take the digest of whatever the tag
+# points at now (the multi-arch index, which CI signs along with each per-arch image).
+if [[ $ref == *@sha256:* ]]; then
+  full_ref=$ref
+else
+  full_ref="${ref%:*}@sha256:$(skopeo inspect --raw "docker://${ref}" | sha256sum | cut -d' ' -f1)"
+fi
 echo "Image reference: ${full_ref}"
 
 # CI signs in the classic format; cosign 3 only reads that when asked, and hides the deprecated
