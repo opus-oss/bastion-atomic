@@ -1,21 +1,46 @@
 #!/bin/sh
 # bastion-amnesic-root <root device> <rootflags>
+# bastion-amnesic-root --layers <ostree= path>
 #
-# Run in the initramfs before /sysroot is mounted, in an amnesic boot only:
+# Run in the initramfs, in an amnesic boot only. The first form, before /sysroot is mounted:
 #  1. every disk present, its partitions, and the device-mapper stack under the root filesystem
 #     are set read-only in the block layer, so nothing in this session can write to them, a
 #     stray read-write mount included;
 #  2. the root filesystem is mounted read-only without replaying its log or journal (a replay
-#     writes even on a read-only mount) at /run/bastion-amnesic/disk;
-#  3. a tmpfs at /run/bastion-amnesic/ram takes the session's changes.
-# /run is carried into the real root at switch-root, so both stay visible there.
+#     writes even on a read-only mount) at /run/bastion-amnesic/disk, which sysroot.mount binds;
+#  3. a tmpfs at /run/bastion-amnesic/ram is made to take the session's changes.
+# The second form, after ostree-prepare-root: RAM layers over the deployment's /etc and over its
+# stateroot's /var, which ostree-system-generator's var.mount binds to /var after switch-root.
+# /run is carried into the real root at switch-root, so all of it stays visible there.
 set -eu
 
-dev=$1
-flags=$2
 size=50%
 
 die() { echo "bastion-amnesic: $*" >&2; exit 1; }
+
+layer() {  # layer <name> <dir>: RAM over <dir>, mounted on <dir>
+    mkdir -p "/run/bastion-amnesic/ram/$1/upper" "/run/bastion-amnesic/ram/$1/work"
+    chmod 0755 "/run/bastion-amnesic/ram/$1" "/run/bastion-amnesic/ram/$1/upper"
+    mount -t overlay overlay \
+        -o "lowerdir=$2,upperdir=/run/bastion-amnesic/ram/$1/upper,workdir=/run/bastion-amnesic/ram/$1/work" "$2"
+}
+
+if [ "${1:-}" = --layers ]; then
+    [ -e /run/bastion-amnesic/active ] || die "the disk was not mounted read-only; refusing to boot"
+    # ostree=/ostree/boot.N/<stateroot>/<checksum>/<n>
+    stateroot=$(echo "${2:-}" | cut -d/ -f4)
+    var=/sysroot/sysroot/ostree/deploy/$stateroot/var
+    { [ -n "$stateroot" ] && [ -d "$var" ]; } || die "no stateroot /var for ostree=${2:-}"
+    layer etc /sysroot/etc
+    layer var "$var"
+    # Where ostree-prepare-root mounted /var itself, cover that too.
+    if mountpoint -q /sysroot/var; then mount --bind "$var" /sysroot/var; fi
+    echo "bastion-amnesic: /etc and /var on RAM"
+    exit 0
+fi
+
+dev=$1
+flags=$2
 
 [ -n "$dev" ] || die "no root= on the kernel command line that names a device; refusing to boot"
 real=$(readlink -f "$dev")
@@ -63,8 +88,7 @@ IFS=$old_ifs
 mkdir -p /run/bastion-amnesic/disk /run/bastion-amnesic/ram
 mount -t "$fstype" -o "$opts$keep" "$real" /run/bastion-amnesic/disk
 mount -t tmpfs -o "mode=0755,size=$size" tmpfs /run/bastion-amnesic/ram
-mkdir -p -m 0755 /run/bastion-amnesic/ram/root/upper /run/bastion-amnesic/ram/root/work
-# The real system's generator checks for this before doing anything, and refuses to start a
-# session that asked to be amnesic and is not.
+# --layers and the real system's generator check for this, and refuse to start a session that
+# asked to be amnesic and is not.
 echo "$real" > /run/bastion-amnesic/active
 echo "bastion-amnesic: $real ($fstype) read-only, changes go to RAM (up to $size)"

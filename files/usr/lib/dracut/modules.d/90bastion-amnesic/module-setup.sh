@@ -18,5 +18,5 @@ install() {
     inst_script "$moddir/bastion-amnesic-initrd-generator" \
         "$systemdutildir/system-generators/bastion-amnesic-initrd-generator"
     inst_script "$moddir/bastion-amnesic-root" /usr/libexec/bastion-amnesic-root
-    inst_multiple blkid blockdev mount mkdir readlink basename systemd-escape
+    inst_multiple blkid blockdev mount mountpoint mkdir chmod readlink basename cut systemd-escape
 }

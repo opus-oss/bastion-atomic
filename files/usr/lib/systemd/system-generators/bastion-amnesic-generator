@@ -1,7 +1,8 @@
 #!/usr/bin/bash
 # Amnesic boot, real system's half. Inert unless bastion.amnesic is on the kernel command line.
 #
-# The initramfs (dracut module bastion-amnesic) has already put / on RAM over the read-only disk.
+# The initramfs (dracut module bastion-amnesic) has already mounted the disk read-only and put
+# RAM layers over /etc and /var.
 # What is left is everything else the system would mount or write from /etc/fstab and
 # /etc/crypttab, and the services that exist to write to the disk:
 #  * /boot and /boot/efi are not mounted at all: they hold the boot chain, and nothing in this

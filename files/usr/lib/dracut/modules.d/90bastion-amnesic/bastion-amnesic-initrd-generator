@@ -1,8 +1,12 @@
 #!/bin/sh
 # Initramfs generator: with bastion.amnesic on the command line, replace sysroot.mount (the disk,
-# read-write) with an overlay of a RAM layer over the disk mounted read-only. ostree-prepare-root
-# runs after sysroot.mount and builds the deployment's /, /etc and /var out of /sysroot as usual,
-# so all of them end up writing to RAM.
+# read-write) with the disk mounted read-only, and once ostree-prepare-root has built the
+# deployment out of it, put RAM layers over its /etc and its stateroot's /var. / itself is
+# composefs and read-only anyway; /home, /root, /opt and /usr/local all live in /var. So
+# everything the session writes goes to RAM.
+#
+# Only /etc and /var get a layer, not the whole disk under ostree: composefs is already an
+# overlay, and another one beneath it goes past the kernel's stacking limit.
 #
 # Written to the early directory, which takes precedence over systemd-fstab-generator's own
 # sysroot.mount. That one also brings systemd-fsck-root, which would write; this one does not.
@@ -14,11 +18,13 @@ normal=${1:?}
 amnesic=""
 root=""
 rootflags=""
+ostree=""
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         bastion.amnesic|bastion.amnesic=1|bastion.amnesic=yes) amnesic=1 ;;
         root=*) root=${arg#root=} ;;
         rootflags=*) rootflags=${arg#rootflags=} ;;
+        ostree=*) ostree=${arg#ostree=} ;;
     esac
 done
 [ -n "$amnesic" ] || exit 0
@@ -58,18 +64,34 @@ EOF
 
 cat > "$early/sysroot.mount" <<EOF
 [Unit]
-Description=Amnesic root: RAM over the read-only disk
+Description=Amnesic root: the disk, read-only
 DefaultDependencies=no
 Requires=bastion-amnesic-root.service
 After=bastion-amnesic-root.service
 Before=initrd-root-fs.target
 
 [Mount]
-What=overlay
+What=/run/bastion-amnesic/disk
 Where=/sysroot
-Type=overlay
-Options=lowerdir=/run/bastion-amnesic/disk,upperdir=/run/bastion-amnesic/ram/root/upper,workdir=/run/bastion-amnesic/ram/root/work
+Type=none
+Options=bind,ro
+EOF
+
+cat > "$normal/bastion-amnesic-layers.service" <<EOF
+[Unit]
+Description=RAM layers over /etc and /var for the amnesic session
+DefaultDependencies=no
+Requires=ostree-prepare-root.service
+After=ostree-prepare-root.service
+Before=initrd-root-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bastion-amnesic-root --layers "$ostree"
+StandardOutput=journal+console
 EOF
 
 mkdir -p "$normal/initrd-root-fs.target.requires"
 ln -sf ../sysroot.mount "$normal/initrd-root-fs.target.requires/sysroot.mount"
+ln -sf ../bastion-amnesic-layers.service "$normal/initrd-root-fs.target.requires/bastion-amnesic-layers.service"

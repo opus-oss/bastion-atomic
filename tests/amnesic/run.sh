@@ -42,6 +42,6 @@ done
 [ "$result" != exited ] || ! grep -q 'AMNESIC-TEST: PASS' "$log" || result=pass
 sleep 5
 kill "$qemu" 2>/dev/null || true
-grep -a 'AMNESIC-TEST' "$log" || true
+if grep -q 'AMNESIC-TEST: PASS' "$log"; then grep -a 'AMNESIC-TEST' "$log"; else tail -c 200000 "$log" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'; fi
 echo "result: $result"
 [ "$result" = pass ]

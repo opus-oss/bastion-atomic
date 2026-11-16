@@ -1,4 +1,4 @@
-# bootc-image-builder settings for the test disk: the kernel console on the serial port, where
-# the test reports.
+# bootc-image-builder settings for the test disk: the kernel console and systemd's boot status on
+# the serial port, where the test reports and the job prints from when it fails.
 [customizations.kernel]
-append = "console=ttyS0,115200"
+append = "console=ttyS0,115200 loglevel=4 systemd.show_status=true rd.systemd.show_status=true"

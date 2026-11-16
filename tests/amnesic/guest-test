@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # In-guest half of the amnesic boot test; reports on the serial console.
 #   boot 1, normal:  the amnesic GRUB entry exists; make it GRUB's default for one boot.
-#   boot 2, amnesic: root is RAM over the read-only disk, disks read-only, /boot unmounted,
+#   boot 2, amnesic: /etc and /var are RAM over the read-only disk, disks read-only, /boot unmounted,
 #                    SELinux enforcing; write markers to /etc, /var and /var/home.
 #   boot 3, normal:  none of the markers is on the disk.
 set -u
@@ -22,7 +22,8 @@ if grep -qw bastion.amnesic /proc/cmdline; then
     say "boot 2: amnesic"
     cat /proc/cmdline; cat /etc/fstab; findmnt
     [[ -e /run/bastion-amnesic/active ]] || fail "/run/bastion-amnesic/active missing"
-    [[ $(findmnt -no FSTYPE /sysroot) == overlay ]] || fail "/sysroot is not the RAM overlay"
+    for m in /etc /var; do [[ $(findmnt -no FSTYPE "$m") == overlay ]] || fail "$m is not a RAM overlay"; done
+    findmnt -no OPTIONS /sysroot | tr , '\n' | grep -qx ro || fail "/sysroot is not read-only"
     findmnt -no OPTIONS /run/bastion-amnesic/disk | tr , '\n' | grep -qx ro || fail "disk not mounted read-only"
     for b in /sys/block/vd*; do
         [[ $(<"$b/ro") == 1 ]] || fail "$b is writable"
