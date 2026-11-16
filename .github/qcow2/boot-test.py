@@ -158,7 +158,8 @@ try:
         # journalctl is closed to the agent; the journal files themselves keep short messages as
         # plain text, which is enough to see why the greeter did not draw.
         print(sh("cat /var/log/journal/*/system.journal /run/log/journal/*/system.journal 2>&1 "
-                 "| tr -c '[:print:]' '\\n' | grep -a '^MESSAGE=' | grep -av 'guest-exec' | uniq | tail -150", wait=300))
+                 "| tr -c '[:print:]' '\\n' | grep -a '^MESSAGE=' | grep -av 'guest-exec' "
+                 "| grep -aiE 'timed out|dependency|fail|emergency|gdm|graphical|Startup finished' | uniq | tail -80", wait=300))
 
     deployments = sh("ls -d /sysroot/ostree/deploy/*/deploy/*.origin").split()
     print("deployments:", deployments)
