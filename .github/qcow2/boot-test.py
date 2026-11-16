@@ -154,6 +154,9 @@ try:
     print(f"screen: {colours} colours sampled, desktop {'up' if gdm else 'not up'}")
     if not gdm:
         failed.append("the GNOME screen never came up")
+        print(sh("ls -l /dev/dri; cat /proc/fb; ls /sys/class/drm"))
+        print(sh("journalctl -b --no-pager -o short-monotonic -u gdm -u display-manager | tail -40"))
+        print(sh("journalctl -b --no-pager -o short-monotonic -p warning | tail -60"))
 
     deployments = sh("ls -d /sysroot/ostree/deploy/*/deploy/*.origin").split()
     print("deployments:", deployments)
