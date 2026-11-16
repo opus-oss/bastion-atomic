@@ -40,8 +40,8 @@ Reboot. Coming from Silverblue, also run `ujust set-kargs-hardening`.
 - [x] **Verified Whonix** for libvirt (`whonix.sh`, signing key pinned by fingerprint).
 - [x] Stricter than secureblue: `ptrace_scope=2`; Intel ME, `sp5100_tco`, `pcspkr`, webcam modules blocked.
 - [x] Opus theme across GNOME Shell, libadwaita, GTK3, Ptyxis; first-login app installer.
-- [ ] **Amnesic boot**: read-only disk, changes held in RAM. Not built yet.
-- [ ] **USB dead-man switch** that wipes the LUKS key slots. Not built yet.
+- [ ] **Amnesic boot**: boot entry with the disk read-only (LUKS opened read-only, no journal replay) and every change in RAM, gone at power-off. Running on forge under the NixOS build ([bastion `modules/amnesic.nix`](https://github.com/opus-oss/bastion/blob/main/modules/amnesic.nix)); not yet ported to these images.
+- [ ] **USB dead-man switch** that wipes the LUKS key slots. In the NixOS build ([`modules/killswitch.nix`](https://github.com/opus-oss/bastion/blob/main/modules/killswitch.nix)); not yet ported.
 - [ ] Signed qcow2 of the vm image.
 
 Underneath is [secureblue](https://secureblue.dev/features): hardened_malloc, SELinux confinement, `run0` instead of sudo, setuid stripped, restricted user namespaces, hardening kargs and sysctls.
