@@ -1,0 +1,17 @@
+# Flatpaks installed for each user at first login, by /usr/libexec/bastion-first-login-apps.
+# One "<remote> <ref>" per line. Flatpaks live in the home directory, not the image, so a new
+# machine (or a new user) otherwise starts with none.
+#
+# A user can add their own in ~/.config/bastion/first-login-apps.list, same format, before the
+# first login or by deleting ~/.local/state/bastion/first-login-apps.done and logging in again.
+# Remotes ending in -only are unverified Flathub narrowed by a filter in
+# /usr/share/bastion/flatpak-filters to exactly the refs named there.
+
+flathub-verified org.keepassxc.KeePassXC
+# Sandboxed GTK3 apps and Electron window frames fall back to light Adwaita without these.
+flathub-themes-only org.gtk.Gtk3theme.adw-gtk3
+flathub-themes-only org.gtk.Gtk3theme.adw-gtk3-dark
+
+# Opt-in, for ~/.config/bastion/first-login-apps.list:
+#   flathub-verified md.obsidian.Obsidian
+#   flathub-signal-only org.signal.Signal

@@ -1,0 +1,3 @@
+# Unverified Flathub, narrowed to Signal. Everything else still comes from flathub-verified.
+deny *
+allow app/org.signal.Signal/*

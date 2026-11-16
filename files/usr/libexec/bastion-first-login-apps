@@ -1,0 +1,71 @@
+#!/usr/bin/bash
+# First-login setup for each user: the Flatpaks in /usr/share/bastion/first-login-apps.list (plus
+# the user's own ~/.config/bastion/first-login-apps.list), and the per-user half of the Opus theme,
+# which lives in the home directory and so cannot come with the image. Runs once; a failed install
+# leaves it to try again at the next login.
+set -uo pipefail
+
+share=/usr/share/bastion
+state=${XDG_STATE_HOME:-$HOME/.local/state}/bastion
+done_marker=$state/first-login-apps.done
+[[ -e $done_marker ]] && exit 0
+mkdir -p "$state"
+
+notify() { notify-send -a "bastion" -i "$1" "$2" "$3" 2>/dev/null || true; }
+
+# The session can start before the network does. Wait for Flathub rather than fail at once.
+for _ in $(seq 60); do
+  getent hosts dl.flathub.org > /dev/null && break
+  sleep 10
+done
+
+repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+# Same arguments as secureblue's own flatpak setup, so whichever runs first, the remote is identical.
+flatpak remote-add --user --if-not-exists --subset=verified --title='Flathub Verified' flathub-verified "$repo"
+
+ensure_remote() {
+  local name=$1
+  [[ $name == flathub-verified ]] && return 0
+  local filter=$share/flatpak-filters/$name
+  if [[ ! -f $filter ]]; then
+    echo "unknown remote $name (no filter at $filter)" >&2
+    return 1
+  fi
+  flatpak remote-add --user --if-not-exists --filter="$filter" "$name" "$repo"
+}
+
+failed=0
+installed=()
+while read -r remote ref; do
+  [[ -z ${remote:-} || $remote == \#* ]] && continue
+  if ! ensure_remote "$remote"; then failed=$((failed + 1)); continue; fi
+  if flatpak install --user -y --noninteractive "$remote" "$ref"; then
+    installed+=("${ref##*.}")
+  else
+    echo "could not install $ref from $remote" >&2
+    failed=$((failed + 1))
+  fi
+done < <(cat "$share/first-login-apps.list" "${XDG_CONFIG_HOME:-$HOME/.config}/bastion/first-login-apps.list" 2>/dev/null)
+
+# --- Opus theme, per-user half -------------------------------------------------------------------
+# Never overwrite: a file already there is the user's.
+theme=/usr/share/opus-theme
+cfg=${XDG_CONFIG_HOME:-$HOME/.config}
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+install_if_absent() { [[ -e $2 ]] || install -D -m 0644 "$1" "$2"; }
+install_if_absent "$theme/gtk4.css" "$cfg/gtk-4.0/gtk.css"
+install_if_absent "$theme/gtk.css" "$cfg/gtk-3.0/gtk.css"
+install_if_absent "$theme/opus.palette" "$data/org.gnome.Ptyxis/palettes/opus.palette"
+# Sandboxed apps cannot see ~/.config otherwise; read-only, and only the two theme directories.
+flatpak override --user --filesystem=xdg-config/gtk-4.0:ro --filesystem=xdg-config/gtk-3.0:ro
+# KeePassXC's Qt 5 draws a bright frame on Wayland that no theme reaches; go frameless instead.
+if flatpak info --user org.keepassxc.KeePassXC > /dev/null 2>&1; then
+  flatpak override --user --env=QT_WAYLAND_DISABLE_WINDOWDECORATION=1 org.keepassxc.KeePassXC
+fi
+
+if (( failed )); then
+  notify dialog-warning "First-login setup incomplete" "$failed app(s) could not be installed; it will try again at the next login."
+  exit 1
+fi
+touch "$done_marker"
+notify dialog-information "First-login setup done" "Installed: ${installed[*]:-nothing new}"

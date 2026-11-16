@@ -26,3 +26,11 @@ style-scheme='opus-dark'
 [org/gnome/Ptyxis]
 font-name='JetBrains Mono 11'
 use-system-font=false
+# A new user's first profile is this one, already on the Opus palette (opus.palette is put in place
+# at first login by bastion-first-login-apps). Existing profiles keep whatever they have.
+default-profile-uuid='6f707573-6f70-7573-6f70-75736f707573'
+profile-uuids=['6f707573-6f70-7573-6f70-75736f707573']
+
+[org/gnome/Ptyxis/Profiles/6f707573-6f70-7573-6f70-75736f707573]
+label='Opus'
+palette='opus'

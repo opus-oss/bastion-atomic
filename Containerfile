@@ -175,6 +175,8 @@ RUN set -eux; \
     done; \
     mkdir -p /usr/lib/systemd/user/timers.target.wants; \
     ln -sf ../bastion-tripwire-notify.timer /usr/lib/systemd/user/timers.target.wants/bastion-tripwire-notify.timer; \
+    mkdir -p /usr/lib/systemd/user/default.target.wants; \
+    ln -sf ../bastion-first-login-apps.service /usr/lib/systemd/user/default.target.wants/bastion-first-login-apps.service; \
     \
     # --- Sanity ---------------------------------------------------------------------------------
     # `ostree container commit` used to go here. It fails on this base with "Not in an

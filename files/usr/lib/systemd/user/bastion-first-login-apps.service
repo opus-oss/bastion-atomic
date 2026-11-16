@@ -1,0 +1,13 @@
+[Unit]
+Description=Install first-login Flatpaks and the per-user Opus theme files
+# Once per user; the marker is written only when every install succeeded.
+ConditionPathExists=!%h/.local/state/bastion/first-login-apps.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bastion-first-login-apps
+# Flathub downloads on a slow link take a while.
+TimeoutStartSec=1h
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,5 @@
+# Unverified Flathub, narrowed to the adw-gtk3 theme for sandboxed GTK3 apps (and Electron frames),
+# so they match the host's adw-gtk3-dark instead of falling back to light Adwaita.
+deny *
+allow runtime/org.gtk.Gtk3theme.adw-gtk3/*
+allow runtime/org.gtk.Gtk3theme.adw-gtk3-dark/*
