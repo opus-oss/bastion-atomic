@@ -1,0 +1,16 @@
+# Keeps the amnesic entries in the GRUB menu current (/usr/libexec/bastion-amnesic-menu). Runs at
+# boot, and again on the way down: ordered before ostree-finalize-staged, it stops after it, so
+# the entries for a freshly staged update are written as soon as ostree has written the update's.
+[Unit]
+Description=Amnesic boot entries in the GRUB menu
+ConditionKernelCommandLine=!bastion.amnesic
+ConditionPathExists=/run/ostree-booted
+RequiresMountsFor=/boot
+After=local-fs.target
+Before=ostree-finalize-staged.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bastion-amnesic-menu
+ExecStop=/usr/libexec/bastion-amnesic-menu

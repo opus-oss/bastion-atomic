@@ -1,0 +1,70 @@
+#!/bin/sh
+# bastion-amnesic-root <root device> <rootflags>
+#
+# Run in the initramfs before /sysroot is mounted, in an amnesic boot only:
+#  1. every disk present, its partitions, and the device-mapper stack under the root filesystem
+#     are set read-only in the block layer, so nothing in this session can write to them, a
+#     stray read-write mount included;
+#  2. the root filesystem is mounted read-only without replaying its log or journal (a replay
+#     writes even on a read-only mount) at /run/bastion-amnesic/disk;
+#  3. a tmpfs at /run/bastion-amnesic/ram takes the session's changes.
+# /run is carried into the real root at switch-root, so both stay visible there.
+set -eu
+
+dev=$1
+flags=$2
+size=50%
+
+die() { echo "bastion-amnesic: $*" >&2; exit 1; }
+
+[ -n "$dev" ] || die "no root= on the kernel command line that names a device; refusing to boot"
+real=$(readlink -f "$dev")
+[ -b "$real" ] || die "root device $dev not found"
+
+setro() { blockdev --setro "/dev/$1" 2>/dev/null || die "could not make /dev/$1 read-only"; }
+
+# The root device and everything it sits on (dm-crypt, LVM), down to the partitions.
+stack() {
+    setro "$1"
+    for s in /sys/class/block/"$1"/slaves/*; do
+        [ -e "$s" ] && stack "$(basename "$s")"
+    done
+    return 0
+}
+stack "$(basename "$real")"
+
+# Every disk attached now, with its partitions: the ESP, /boot and any other installed drive.
+# Drives plugged in later stay writable, to save something on purpose.
+for d in /sys/block/*; do
+    name=$(basename "$d")
+    case "$name" in loop*|ram*|zram*|dm-*|md*|sr*|nbd*) continue ;; esac
+    setro "$name"
+    for p in "$d/$name"*; do
+        [ -e "$p/partition" ] && setro "$(basename "$p")"
+    done
+done
+
+fstype=$(blkid -o value -s TYPE "$real") || die "cannot tell the filesystem on $real"
+case "$fstype" in
+    btrfs) opts="ro,rescue=nologreplay" ;;
+    ext4|ext3) opts="ro,noload" ;;
+    xfs) opts="ro,norecovery" ;;
+    *) die "no read-only mount without log replay known for $fstype; refusing to boot" ;;
+esac
+
+# Keep the root's own flags (subvol=, compress=) except whatever would make it writable.
+keep=""
+old_ifs=$IFS; IFS=,
+for f in $flags; do
+    case "$f" in rw|ro|defaults|"") ;; *) keep="$keep,$f" ;; esac
+done
+IFS=$old_ifs
+
+mkdir -p /run/bastion-amnesic/disk /run/bastion-amnesic/ram
+mount -t "$fstype" -o "$opts$keep" "$real" /run/bastion-amnesic/disk
+mount -t tmpfs -o "mode=0755,size=$size" tmpfs /run/bastion-amnesic/ram
+mkdir -p -m 0755 /run/bastion-amnesic/ram/root/upper /run/bastion-amnesic/ram/root/work
+# The real system's generator checks for this before doing anything, and refuses to start a
+# session that asked to be amnesic and is not.
+echo "$real" > /run/bastion-amnesic/active
+echo "bastion-amnesic: $real ($fstype) read-only, changes go to RAM (up to $size)"

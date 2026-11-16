@@ -217,6 +217,26 @@ RUN set -eux; \
     ln -sf ../bastion-tripwire-notify.timer /usr/lib/systemd/user/timers.target.wants/bastion-tripwire-notify.timer; \
     mkdir -p /usr/lib/systemd/user/default.target.wants; \
     ln -sf ../bastion-first-login-apps.service /usr/lib/systemd/user/default.target.wants/bastion-first-login-apps.service; \
+    ln -sf ../bastion-amnesic-menu.service /usr/lib/systemd/system/multi-user.target.wants/bastion-amnesic-menu.service; \
+    mkdir -p /usr/lib/systemd/system/paths.target.wants; \
+    ln -sf ../bastion-amnesic-menu-refresh.path /usr/lib/systemd/system/paths.target.wants/bastion-amnesic-menu-refresh.path; \
+    mkdir -p /usr/lib/systemd/user/graphical-session.target.wants; \
+    ln -sf ../bastion-amnesic-notice.service /usr/lib/systemd/user/graphical-session.target.wants/bastion-amnesic-notice.service; \
+    \
+    # --- Amnesic boot ----------------------------------------------------------------------------
+    # The boot entry that forgets everything (modules/amnesic.nix in the NixOS build). Its
+    # initramfs half is the bastion-amnesic dracut module, which secureblue's initramfs does not
+    # have, so rebuild it for secureblue's kernel with the same arguments the base used. The forge
+    # and vm images rebuild theirs again in kernel/install.sh, which picks the module up the same
+    # way. Without it the entry powers off instead of booting writable, but check anyway.
+    kver="$(ls /usr/lib/modules)"; [ "$(echo "$kver" | wc -l)" = 1 ]; \
+    img="/usr/lib/modules/$kver/initramfs.img"; mode="$(stat -c %a "$img")"; \
+    dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree -f "$img"; \
+    chmod "$mode" "$img"; \
+    lsinitrd "$img" > /tmp/initrd.txt; \
+    for want in usr/lib/systemd/system-generators/bastion-amnesic-initrd-generator usr/libexec/bastion-amnesic-root usr/lib/ostree/ostree-prepare-root; do \
+      grep -qF " $want" /tmp/initrd.txt || { echo "missing from initramfs: $want" >&2; exit 1; }; \
+    done; rm /tmp/initrd.txt; \
     \
     # --- Sanity ---------------------------------------------------------------------------------
     # `ostree container commit` used to go here. It fails on this base with "Not in an

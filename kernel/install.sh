@@ -43,12 +43,13 @@ dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree --omit pl
 chmod 0600 "/usr/lib/modules/$kver/initramfs.img"
 
 # dracut reports some failures (an uncopyable /root, for one) and still exits 0, so check that
-# what the machine cannot boot without made it in: the firmware, the LUKS unlock, and the step
-# that mounts the ostree deployment.
+# what the machine cannot boot without made it in: the firmware, the LUKS unlock, the step
+# that mounts the ostree deployment, and the amnesic entry's read-only root.
 lsinitrd -m "/usr/lib/modules/$kver/initramfs.img"
 list=$(mktemp)
 lsinitrd "/usr/lib/modules/$kver/initramfs.img" > "$list"
-for want in $fw /usr/lib/systemd/systemd-cryptsetup /usr/lib/ostree/ostree-prepare-root; do
+for want in $fw /usr/lib/systemd/systemd-cryptsetup /usr/lib/ostree/ostree-prepare-root \
+    /usr/lib/systemd/system-generators/bastion-amnesic-initrd-generator /usr/libexec/bastion-amnesic-root; do
   grep -qF " ${want#/}" "$list" || { echo "missing from initramfs: $want" >&2; exit 1; }
 done
 rm "$list"

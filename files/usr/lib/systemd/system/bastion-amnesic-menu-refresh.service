@@ -1,0 +1,7 @@
+[Unit]
+Description=Rewrite the amnesic boot entries after a deployment change
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bastion-amnesic-menu

@@ -1,0 +1,75 @@
+#!/bin/sh
+# Initramfs generator: with bastion.amnesic on the command line, replace sysroot.mount (the disk,
+# read-write) with an overlay of a RAM layer over the disk mounted read-only. ostree-prepare-root
+# runs after sysroot.mount and builds the deployment's /, /etc and /var out of /sysroot as usual,
+# so all of them end up writing to RAM.
+#
+# Written to the early directory, which takes precedence over systemd-fstab-generator's own
+# sysroot.mount. That one also brings systemd-fsck-root, which would write; this one does not.
+# Anything wrong here fails the boot rather than booting writable.
+
+early=${2:?}
+normal=${1:?}
+
+amnesic=""
+root=""
+rootflags=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        bastion.amnesic|bastion.amnesic=1|bastion.amnesic=yes) amnesic=1 ;;
+        root=*) root=${arg#root=} ;;
+        rootflags=*) rootflags=${arg#rootflags=} ;;
+    esac
+done
+[ -n "$amnesic" ] || exit 0
+
+case "$root" in
+    UUID=*) dev=/dev/disk/by-uuid/${root#UUID=} ;;
+    LABEL=*) dev=/dev/disk/by-label/${root#LABEL=} ;;
+    PARTUUID=*) dev=/dev/disk/by-partuuid/${root#PARTUUID=} ;;
+    PARTLABEL=*) dev=/dev/disk/by-partlabel/${root#PARTLABEL=} ;;
+    /dev/*) dev=$root ;;
+    *) dev="" ;;
+esac
+
+if [ -n "$dev" ]; then
+    devunit=$(systemd-escape --path --suffix=device "$dev")
+    wait="Requires=$devunit
+After=$devunit"
+else
+    # No root= the script can resolve: let the service fail with a reason, and the boot with it.
+    wait=""
+fi
+
+cat > "$normal/bastion-amnesic-root.service" <<EOF
+[Unit]
+Description=Mount the disk read-only for the amnesic session
+DefaultDependencies=no
+$wait
+After=cryptsetup.target initrd-root-device.target
+Before=sysroot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/bastion-amnesic-root "$dev" "$rootflags"
+StandardOutput=journal+console
+EOF
+
+cat > "$early/sysroot.mount" <<EOF
+[Unit]
+Description=Amnesic root: RAM over the read-only disk
+DefaultDependencies=no
+Requires=bastion-amnesic-root.service
+After=bastion-amnesic-root.service
+Before=initrd-root-fs.target
+
+[Mount]
+What=overlay
+Where=/sysroot
+Type=overlay
+Options=lowerdir=/run/bastion-amnesic/disk,upperdir=/run/bastion-amnesic/ram/root/upper,workdir=/run/bastion-amnesic/ram/root/work
+EOF
+
+mkdir -p "$normal/initrd-root-fs.target.requires"
+ln -sf ../sysroot.mount "$normal/initrd-root-fs.target.requires/sysroot.mount"

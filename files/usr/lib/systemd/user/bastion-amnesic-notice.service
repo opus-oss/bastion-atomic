@@ -1,0 +1,12 @@
+# The amnesic session's notice on the desktop, so it is never mistaken for a normal one.
+[Unit]
+Description=Amnesic session notice
+ConditionKernelCommandLine=bastion.amnesic
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/notify-send --urgency=critical --app-name=Bastion --icon=dialog-warning "Amnesic session" "Nothing you do here is saved. Power off to forget it."
+# GNOME Shell takes notifications a moment after the session starts.
+Restart=on-failure
+RestartSec=5

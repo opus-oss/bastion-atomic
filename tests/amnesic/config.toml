@@ -1,0 +1,4 @@
+# bootc-image-builder settings for the test disk: the kernel console on the serial port, where
+# the test reports.
+[customizations.kernel]
+append = "console=ttyS0,115200"

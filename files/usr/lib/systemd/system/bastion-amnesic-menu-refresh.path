@@ -1,0 +1,9 @@
+# ostree swaps /boot/loader to a new entries directory on every deployment change (upgrade,
+# rollback, kargs, cleanup); rewrite the amnesic entries when it does.
+[Unit]
+Description=Watch the boot entries for the amnesic menu
+ConditionKernelCommandLine=!bastion.amnesic
+ConditionPathExists=/run/ostree-booted
+
+[Path]
+PathChanged=/boot/loader

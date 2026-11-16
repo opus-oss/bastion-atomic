@@ -1,0 +1,76 @@
+#!/usr/bin/bash
+# In-guest half of the amnesic boot test; reports on the serial console.
+#   boot 1, normal:  the amnesic GRUB entry exists; make it GRUB's default for one boot.
+#   boot 2, amnesic: root is RAM over the read-only disk, disks read-only, /boot unmounted,
+#                    SELinux enforcing; write markers to /etc, /var and /var/home.
+#   boot 3, normal:  none of the markers is on the disk.
+set -u
+shopt -s nullglob
+exec > /dev/ttyS0 2>&1
+state=/var/lib/bastion-amnesic-test
+say() { echo "AMNESIC-TEST: $*"; }
+fail() {
+    say "FAIL: $*"
+    findmnt; cat /etc/fstab; systemctl --failed --no-pager
+    journalctl -b -p warning --no-pager | tail -n 80
+    systemctl --no-block poweroff
+    exit 1
+}
+markers=(/etc/bastion-amnesic-test-marker "$state/amnesic-marker" /var/home/bastion-amnesic-test-marker /root/bastion-amnesic-test-marker)
+
+if grep -qw bastion.amnesic /proc/cmdline; then
+    say "boot 2: amnesic"
+    cat /proc/cmdline; cat /etc/fstab; findmnt
+    [[ -e /run/bastion-amnesic/active ]] || fail "/run/bastion-amnesic/active missing"
+    [[ $(findmnt -no FSTYPE /sysroot) == overlay ]] || fail "/sysroot is not the RAM overlay"
+    findmnt -no OPTIONS /run/bastion-amnesic/disk | tr , '\n' | grep -qx ro || fail "disk not mounted read-only"
+    for b in /sys/block/vd*; do
+        [[ $(<"$b/ro") == 1 ]] || fail "$b is writable"
+        for p in "$b"/vd*; do [[ $(<"$p/ro") == 1 ]] || fail "$p is writable"; done
+    done
+    ! mountpoint -q /boot || fail "/boot is mounted"
+    [[ $(getenforce) == Enforcing ]] || fail "SELinux is $(getenforce)"
+    [[ -e $state/boot1 ]] || fail "boot 1's state is not visible"
+    [[ $(systemctl is-enabled rpm-ostreed-automatic.timer 2>&1) == masked* ]] || fail "updates not masked"
+    # Every disk filesystem in fstab other than /boot is RAM over a read-only lower layer.
+    while read -r spec mp type _; do
+        [[ -z $spec || $spec == \#* || $type == swap || $mp == / || $mp == /boot* ]] && continue
+        [[ $(findmnt -no FSTYPE "$mp") == overlay ]] || fail "$mp ($type) is not overlaid"
+    done < /etc/fstab
+    mkdir -p /var/home
+    for m in "${markers[@]}"; do echo amnesic > "$m" || fail "cannot write $m"; done
+    for m in "${markers[@]}"; do [[ -e $m ]] || fail "$m not readable back"; done
+    systemctl --failed --no-pager
+    say "boot 2 ok"
+    sync
+    systemctl --no-block reboot
+elif [[ -e $state/boot1 ]]; then
+    say "boot 3: normal, after the amnesic one"
+    [[ ! -e /run/bastion-amnesic/active ]] || fail "normal boot came up amnesic"
+    for m in "${markers[@]}"; do [[ ! -e $m ]] || fail "$m survived the amnesic session"; done
+    grep -q bastion-amnesic-0 /boot/grub2/bastion-amnesic.cfg || fail "amnesic entry gone"
+    say PASS
+    systemctl --no-block poweroff
+else
+    say "boot 1: normal"
+    systemctl is-active bastion-amnesic-menu.service || fail "bastion-amnesic-menu.service did not run"
+    grep -qF bastion-amnesic.cfg /boot/grub2/custom.cfg || fail "custom.cfg does not source the entries"
+    grep -q 'bastion.amnesic' /boot/grub2/bastion-amnesic.cfg || fail "no amnesic entry"
+    cat /boot/grub2/custom.cfg /boot/grub2/bastion-amnesic.cfg
+    for m in "${markers[@]}"; do [[ ! -e $m ]] || fail "$m exists before the test"; done
+    mkdir -p "$state"; touch "$state/boot1"
+    # Test only: pick the amnesic entry for the next boot. bootupd's static grub.cfg has no
+    # next_entry, but it sources console.cfg early and loads grubenv.
+    if findmnt -no OPTIONS /boot | tr , '\n' | grep -qx ro; then mount -o remount,rw /boot; fi
+    cat > /boot/grub2/console.cfg <<'EOF'
+if [ "${bastion_amnesic_test}" = "1" ]; then
+  set default=bastion-amnesic-0
+  set bastion_amnesic_test=0
+  save_env bastion_amnesic_test
+fi
+EOF
+    grub2-editenv /boot/grub2/grubenv set bastion_amnesic_test=1 || fail "grub2-editenv"
+    say "boot 1 ok"
+    sync
+    systemctl --no-block reboot
+fi

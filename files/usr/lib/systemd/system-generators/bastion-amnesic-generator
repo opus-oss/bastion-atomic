@@ -1,0 +1,177 @@
+#!/usr/bin/bash
+# Amnesic boot, real system's half. Inert unless bastion.amnesic is on the kernel command line.
+#
+# The initramfs (dracut module bastion-amnesic) has already put / on RAM over the read-only disk.
+# What is left is everything else the system would mount or write from /etc/fstab and
+# /etc/crypttab, and the services that exist to write to the disk:
+#  * /boot and /boot/efi are not mounted at all: they hold the boot chain, and nothing in this
+#    session has a reason to touch it;
+#  * every other local filesystem in fstab (a /var or /home subvolume, a data drive) gets the same
+#    treatment as /: mounted read-only without log replay, with a RAM layer on top;
+#  * swap on disk is off, and crypttab volumes are opened read-only;
+#  * updates, bootloader updates and the tripwire are masked.
+# Units go to the early directory, which takes precedence over systemd-fstab-generator's and
+# ostree-system-generator's units of the same name.
+set -u
+
+# $1 is the normal directory, unused: everything here overrides.
+early=${2:?}
+
+[[ -e /etc/initrd-release ]] && exit 0
+amnesic=""
+read -r -a args < /proc/cmdline
+for a in "${args[@]}"; do
+    case "$a" in bastion.amnesic|bastion.amnesic=1|bastion.amnesic=yes) amnesic=1 ;; esac
+done
+[[ -n $amnesic ]] || exit 0
+
+mask() { ln -sf /dev/null "$early/$1"; }
+
+# Asked to be amnesic, but the initramfs did not set it up (an initramfs without the module, or
+# one rebuilt on this machine without it): / is the disk, read-write. Stop before anything else is
+# mounted and power off, rather than run a session the user believes leaves no trace.
+if [[ ! -e /run/bastion-amnesic/active ]]; then
+    cat > "$early/bastion-amnesic-failed.service" <<'EOF'
+[Unit]
+Description=Refuse a non-amnesic boot of the amnesic entry
+DefaultDependencies=no
+Before=local-fs-pre.target sysinit.target
+SuccessAction=poweroff-force
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+StandardOutput=tty
+TTYPath=/dev/console
+ExecStart=/usr/bin/bash -c 'echo; echo "AMNESIC BOOT FAILED: the disk is not read-only. Powering off in 30 seconds."; sleep 30'
+EOF
+    mkdir -p "$early/sysinit.target.wants"
+    ln -sf ../bastion-amnesic-failed.service "$early/sysinit.target.wants/bastion-amnesic-failed.service"
+    exit 0
+fi
+
+esc() { systemd-escape --path --suffix="$2" "$1"; }
+
+device() {
+    case "$1" in
+        UUID=*) echo "/dev/disk/by-uuid/${1#UUID=}" ;;
+        LABEL=*) echo "/dev/disk/by-label/${1#LABEL=}" ;;
+        PARTUUID=*) echo "/dev/disk/by-partuuid/${1#PARTUUID=}" ;;
+        PARTLABEL=*) echo "/dev/disk/by-partlabel/${1#PARTLABEL=}" ;;
+        /dev/*) echo "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+# --- fstab ---------------------------------------------------------------------------------------
+dirs=()
+n=0
+if [[ -r /etc/fstab ]]; then
+    while read -r spec mp type opts _; do
+        [[ -z $spec || $spec == \#* ]] && continue
+        if [[ $type == swap ]]; then
+            dev=$(device "$spec") && mask "$(esc "$dev" swap)"
+            continue
+        fi
+        case "$mp" in /|/sysroot|/usr) continue ;; esac
+        if [[ $mp == /boot || $mp == /boot/* ]]; then
+            mask "$(esc "$mp" mount)"
+            continue
+        fi
+        case "$type" in
+            btrfs) ro="ro,rescue=nologreplay" ;;
+            ext4|ext3) ro="ro,noload" ;;
+            xfs) ro="ro,norecovery" ;;
+            vfat|exfat|ext2) ro="ro" ;;
+            *) continue ;;  # network, tmpfs and bind mounts: not the disk
+        esac
+        dev=$(device "$spec") || continue
+        keep=""
+        nofail=""
+        IFS=, read -r -a o <<< "$opts"
+        for f in "${o[@]}"; do
+            case "$f" in
+                rw|ro|defaults|auto|noauto|x-systemd.*|x-initrd.*|_netdev|"") ;;
+                nofail) nofail=1 ;;
+                *) keep="$keep,$f" ;;
+            esac
+        done
+        n=$((n + 1))
+        lower=/run/bastion-amnesic/lower/$n
+        ram=/run/bastion-amnesic/ram/fs/$n
+        dirs+=("$lower" "$ram/upper" "$ram/work")
+        lowerunit=$(esc "$lower" mount)
+        unit=$(esc "$mp" mount)
+        cat > "$early/$lowerunit" <<EOF
+[Unit]
+Description=$mp on disk, read-only, for the amnesic session
+Requires=bastion-amnesic-dirs.service
+After=bastion-amnesic-dirs.service
+
+[Mount]
+What=$dev
+Where=$lower
+Type=$type
+Options=$ro$keep
+EOF
+        cat > "$early/$unit" <<EOF
+[Unit]
+Description=$mp: RAM over the read-only disk
+Requires=$lowerunit
+After=$lowerunit
+
+[Mount]
+What=overlay
+Where=$mp
+Type=overlay
+Options=lowerdir=$lower,upperdir=$ram/upper,workdir=$ram/work
+EOF
+        if [[ -n $nofail ]]; then w=wants; else w=requires; fi
+        mkdir -p "$early/local-fs.target.$w"
+        ln -sf "../$unit" "$early/local-fs.target.$w/$unit"
+    done < /etc/fstab
+fi
+
+# Mount points for the units above, and the console notice.
+cat > "$early/bastion-amnesic-dirs.service" <<EOF
+[Unit]
+Description=Prepare the amnesic session's RAM layers
+DefaultDependencies=no
+Before=local-fs-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mkdir -p -m 0755 /run/bastion-amnesic/lower /run/bastion-amnesic/ram/fs /run/motd.d ${dirs[*]}
+ExecStart=/usr/bin/bash -c 'echo "Amnesic session: nothing you do here is saved. Power off to forget it." > /run/motd.d/50-bastion-amnesic'
+EOF
+mkdir -p "$early/local-fs-pre.target.wants"
+ln -sf ../bastion-amnesic-dirs.service "$early/local-fs-pre.target.wants/bastion-amnesic-dirs.service"
+
+# --- crypttab: open read-only ----------------------------------------------------------------------
+if [[ -r /etc/crypttab ]]; then
+    while read -r name src key opts _; do
+        [[ -z $name || $name == \#* ]] && continue
+        dev=$(device "$src") || dev=$src
+        [[ -z $key || $key == - ]] && key=none
+        opts=${opts:-luks}
+        d="$early/systemd-cryptsetup@$(systemd-escape "$name").service.d"
+        mkdir -p "$d"
+        cat > "$d/50-bastion-amnesic.conf" <<EOF
+[Service]
+ExecStart=
+ExecStart=/usr/lib/systemd/systemd-cryptsetup attach '$name' '$dev' '$key' '$opts,read-only'
+EOF
+    done < /etc/crypttab
+fi
+
+# --- What exists to write to the disk ---------------------------------------------------------------
+for u in rpm-ostreed-automatic.timer rpm-ostreed-automatic.service upgrade-on-boot.service \
+         bootc-fetch-apply-updates.timer bootc-fetch-apply-updates.service \
+         ostree-finalize-staged.path ostree-finalize-staged.service bootloader-update.service \
+         fstrim.timer fstrim.service \
+         bastion-tripwire.timer bastion-tripwire.service \
+         bastion-amnesic-menu.service bastion-amnesic-menu-refresh.path boot.mount; do
+    mask "$u"
+done
+exit 0

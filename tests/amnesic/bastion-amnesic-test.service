@@ -1,0 +1,7 @@
+[Unit]
+Description=Amnesic boot test (CI only)
+After=local-fs.target bastion-amnesic-menu.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bastion-amnesic-test

@@ -93,6 +93,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  amnesic-test:
+    # Boots the amd64 vm image three times in QEMU/KVM: normal (the amnesic GRUB entry gets
+    # written), amnesic (/ is RAM over the read-only disk), normal again (nothing from the amnesic
+    # session survived). tests/amnesic/ has both halves. It reports rather than gates: a failure
+    # is a red run, the image still publishes.
+    needs: build
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+            /opt/hostedtoolcache /usr/local/.ghcup /usr/lib/jvm /usr/share/swift
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+
+      - name: QEMU
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq qemu-system-x86 ovmf
+          ls -l /dev/kvm
+
+      - name: Boot normal, amnesic, normal
+        env:
+          IMAGE: ${{ env.REGISTRY }}/bastion-atomic-vm:${{ github.sha }}-amd64
+        run: sudo OUT="$PWD/amnesic-test-out" bash tests/amnesic/run.sh "$IMAGE"
+
+      - name: Serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amnesic-test-serial
+          path: amnesic-test-out/serial.log
+          if-no-files-found: ignore
+
   manifest:
     needs: build
     # This still runs when the arm64 build fails, which keeps amd64 machines updating. It refuses

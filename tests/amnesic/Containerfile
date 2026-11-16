@@ -1,0 +1,7 @@
+# The vm image plus the in-guest half of the amnesic boot test. Built and booted in CI only, never
+# pushed.
+ARG IMAGE
+FROM ${IMAGE}
+COPY guest-test /usr/libexec/bastion-amnesic-test
+COPY bastion-amnesic-test.service /usr/lib/systemd/system/bastion-amnesic-test.service
+RUN ln -s ../bastion-amnesic-test.service /usr/lib/systemd/system/multi-user.target.wants/bastion-amnesic-test.service

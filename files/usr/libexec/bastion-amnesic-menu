@@ -1,0 +1,91 @@
+#!/usr/bin/bash
+# shellcheck disable=SC2016  # $prefix and $1/$2 are for GRUB and the inner bash
+# Write the amnesic boot entries into the GRUB menu: one per ostree deployment, the same kernel,
+# initramfs and arguments as its normal entry plus bastion.amnesic, and LUKS opened read-only.
+#
+# ostree owns /boot/loader/entries and rewrites it on every deployment change, and reads every
+# file in it back as a deployment, so the entries cannot go there. GRUB sources
+# /boot/grub2/custom.cfg after the BLS entries (bootupd's static config and grub2-mkconfig's
+# both do), so they go in /boot/grub2/bastion-amnesic.cfg, sourced from custom.cfg.
+# bastion-amnesic-menu.service runs this at boot and again at shutdown after ostree has written a
+# staged update; bastion-amnesic-menu-refresh.path runs it when the entries change in between.
+set -euo pipefail
+
+boot=${BASTION_BOOT:-/boot}
+entries=$boot/loader/entries
+grub=$boot/grub2
+out=$grub/bastion-amnesic.cfg
+custom=$grub/custom.cfg
+hook='if [ -f $prefix/bastion-amnesic.cfg ]; then source $prefix/bastion-amnesic.cfg; fi'
+
+[[ -d $grub && -d $entries ]] || { echo "no GRUB BLS setup under $boot, nothing to do"; exit 0; }
+
+# On a system where /boot is mounted read-only, write from a private mount namespace, the way
+# ostree itself does.
+if [[ -z ${BASTION_AMNESIC_NS:-} ]] && findmnt -no OPTIONS "$boot" 2>/dev/null | tr , '\n' | grep -qx ro; then
+    exec env BASTION_AMNESIC_NS=1 unshare -m bash -c 'mount -o remount,rw "$1" && exec "$2"' _ "$boot" "$0"
+fi
+
+# Arguments of the amnesic entry: the normal ones, LUKS read-only (appended to an existing
+# rd.luks.options so a TPM or FIDO unlock keeps working), and the switch itself.
+amnesic_options() {
+    local general="" res=() a v
+    for a in $1; do
+        case "$a" in
+            rd.luks.options=*)
+                v=${a#rd.luks.options=}
+                [[ $v =~ ^[0-9A-Fa-f-]{32,36}= ]] || general=1
+                a="$a,read-only" ;;
+            bastion.amnesic*) continue ;;
+        esac
+        res+=("$a")
+    done
+    [[ -n $general ]] || res+=("rd.luks.options=read-only")
+    res+=("bastion.amnesic")
+    echo "${res[*]}"
+}
+
+quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+tmp=$(mktemp "$grub/.bastion-amnesic.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+{
+    echo "# Written by /usr/libexec/bastion-amnesic-menu from $entries. Edits are overwritten."
+    i=0
+    # Newest deployment first, as ostree numbers them (a higher version is newer).
+    for f in $(grep -l '^options .*ostree=' "$entries"/*.conf 2>/dev/null \
+               | while read -r e; do printf '%s %s\n' "$(awk '$1=="version"{print $2}' "$e")" "$e"; done \
+               | sort -rn | cut -d' ' -f2-); do
+        title="" linux="" options="" initrds=() dtb=""
+        while read -r k v; do
+            case "$k" in
+                title) title=$v ;;
+                linux) linux=$v ;;
+                initrd) initrds+=("$v") ;;
+                options) options=$v ;;
+                devicetree) dtb=$v ;;
+            esac
+        done < "$f"
+        [[ -n $linux ]] || continue
+        echo
+        echo "menuentry $(quote "$title (amnesic: nothing is saved)") --class gnu-linux --class os --unrestricted --id bastion-amnesic-$i {"
+        echo "  load_video"
+        echo "  set gfxpayload=keep"
+        echo "  insmod gzio"
+        echo "  linux $linux $(amnesic_options "$options")"
+        [[ ${#initrds[@]} -eq 0 ]] || echo "  initrd ${initrds[*]}"
+        [[ -z $dtb ]] || echo "  devicetree $dtb"
+        echo "}"
+        i=$((i + 1))
+    done
+} > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out"
+trap - EXIT
+
+# custom.cfg may be the user's own: add the one line to it rather than replace it.
+if ! grep -qxF "$hook" "$custom" 2>/dev/null; then
+    printf '%s\n' "$hook" >> "$custom"
+fi
+sync -f "$out"
+echo "$(grep -c '^menuentry' "$out") amnesic entries in $out"
