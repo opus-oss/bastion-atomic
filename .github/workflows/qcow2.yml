@@ -112,8 +112,10 @@ jobs:
           want="container-image-reference=ostree-image-signed:docker://$IMAGE:latest"
           loop=$(sudo losetup -fP --show output/image/disk.raw)
           trap 'sudo umount mnt 2>/dev/null; sudo losetup -d "$loop"' EXIT
-          sudo lsblk -o NAME,FSTYPE,SIZE "$loop"
-          root=$(sudo lsblk -lnpo NAME,FSTYPE "$loop" | awk '$2 == "btrfs" { print $1 }')
+          # blkid, not lsblk: lsblk reads udev's database, which has not probed new loop partitions.
+          sudo blkid "$loop"p*
+          root=$(sudo blkid -t TYPE=btrfs -o device "$loop"p*)
+          [ "$(wc -l <<<"$root")" = 1 ]
           mkdir -p mnt && sudo mount "$root" mnt
           mapfile -t origins < <(sudo find mnt -maxdepth 7 -path '*/ostree/deploy/*/deploy/*.origin')
           [ "${#origins[@]}" = 1 ] || { echo "::error::expected one deployment, found: ${origins[*]}"; exit 1; }
