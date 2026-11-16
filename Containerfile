@@ -90,7 +90,7 @@ FROM ${BASE}:${TAG} AS generic
 # DoH resolver, installed before the copy so files/etc/dnscrypt-proxy/dnscrypt-proxy.toml replaces
 # the package's default rather than being set aside as .rpmnew. Then the Opus theme's fonts, and
 # adw-gtk3 so GTK3 apps take libadwaita's look and the Opus colours with it.
-RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw-gtk3-theme \
+RUN dnf5 install -y dnscrypt-proxy rsms-inter-fonts jetbrains-mono-fonts-all adw-gtk3-theme cosign \
     && dnf5 clean all
 
 # Everything under files/ mirrors the target filesystem layout, so the copy is one step and what
@@ -141,6 +141,18 @@ RUN set -eux; \
     # --- Opus theme ----------------------------------------------------------------------------
     # Compile the GNOME defaults in /etc/dconf/db/local.d into the database dconf actually reads.
     dconf update; \
+    \
+    # --- Update provenance ----------------------------------------------------------------------
+    # secureblue's updaters (rpm-ostreed-automatic, upgrade-on-boot) run verify-provenance.sh first,
+    # and it only knows ghcr.io/secureblue/*: every update of this image was refused. Route
+    # ghcr.io/opus-oss/* to a cosign check against the pinned key; other references keep
+    # secureblue's handling. If the script changes shape upstream, stop the build rather than ship
+    # an updater that refuses everything again.
+    vp=/usr/libexec/secureblue/verify-provenance.sh; \
+    grep -q "^    ghcr.io/secureblue/\*)$" "$vp"; \
+    sed -i 's|^    ghcr.io/secureblue/\*)$|    ghcr.io/opus-oss/*)\n        exec /usr/libexec/bastion-verify-provenance "${image_ref}"\n        ;;\n&|' "$vp"; \
+    grep -q 'exec /usr/libexec/bastion-verify-provenance' "$vp"; \
+    bash -n "$vp"; \
     \
     # --- Persistence tripwire --------------------------------------------------------------------
     # Root check after boot and daily; a per-user timer turns its findings into a notification.

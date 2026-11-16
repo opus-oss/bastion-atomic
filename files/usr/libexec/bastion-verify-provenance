@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+# Provenance check for ghcr.io/opus-oss images, called from secureblue's verify-provenance.sh.
+#
+# secureblue checks its own images with slsa-verifier against github.com/secureblue/secureblue and
+# rejects every other reference, which left this machine refusing all updates. The trust anchor
+# for these images is the cosign key their CI signs with, pinned at /etc/pki/containers/opus-oss.pub
+# (the same key policy.json holds rpm-ostree to), so verify the update's signature against it
+# before secureblue's updater is allowed to stage it.
+set -euo pipefail
+ref=$1
+key=/etc/pki/containers/opus-oss.pub
+
+full_ref=$(crane digest --full-ref "$ref")
+echo "Image reference: ${full_ref}"
+
+# CI signs in the classic format; cosign 3 only reads that when asked, and hides the deprecated
+# flag from --help, so try it and fall back for a cosign 2 that does not know it.
+if ! out=$(cosign verify --new-bundle-format=false --key "$key" "$full_ref" 2>&1); then
+  if grep -q 'unknown flag' <<<"$out"; then
+    cosign verify --key "$key" "$full_ref" > /dev/null
+  else
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+fi
+echo "Signature on ${full_ref} verified against ${key}"
