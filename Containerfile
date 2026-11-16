@@ -159,6 +159,23 @@ RUN set -eux; \
     systemctl enable bastion-tripwire.timer; \
     systemctl --global enable bastion-tripwire-notify.timer; \
     \
+    # --- Enable from /usr too -------------------------------------------------------------------
+    # The `systemctl enable`s above write to /etc, and /etc is merged with the machine's own on a
+    # rebase: from plain Silverblue the image's links never reached the VM, which kept dnsconfd and
+    # unbound and ran neither dnscrypt-proxy nor the firewall. systemd reads .wants/ in
+    # /usr/lib/systemd as well, and /usr is the image, so these hold whatever /etc says. The
+    # services they replace are kept from starting by their 50-bastion-replaced.conf drop-ins.
+    for u in dnscrypt-proxy.service bastion-nftables.service; do \
+      mkdir -p /usr/lib/systemd/system/multi-user.target.wants; \
+      ln -sf "../$u" "/usr/lib/systemd/system/multi-user.target.wants/$u"; \
+    done; \
+    for u in bastion-timesync.timer bastion-tripwire.timer; do \
+      mkdir -p /usr/lib/systemd/system/timers.target.wants; \
+      ln -sf "../$u" "/usr/lib/systemd/system/timers.target.wants/$u"; \
+    done; \
+    mkdir -p /usr/lib/systemd/user/timers.target.wants; \
+    ln -sf ../bastion-tripwire-notify.timer /usr/lib/systemd/user/timers.target.wants/bastion-tripwire-notify.timer; \
+    \
     # --- Sanity ---------------------------------------------------------------------------------
     # `ostree container commit` used to go here. It fails on this base with "Not in an
     # ostree-based container environment": the step belongs to the older ostree layering flow and
