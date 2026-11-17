@@ -22,6 +22,34 @@ subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-b", os.path.abspath
                 "-F", "qcow2", overlay], check=True)
 
 kvm = os.access("/dev/kvm", os.W_OK)
+
+
+def slow_devices(overlay):
+    """Under TCG (GitHub's arm64 runners have no KVM) udev takes longer than systemd's 90 s
+    device timeout to announce /boot, local-fs.target fails, and the boot stops in emergency mode
+    before gdm. Give the test boot a longer timeout in its boot entry. This edits the overlay only:
+    the published disk keeps its entries as built."""
+    run_ = lambda *a: subprocess.run(["sudo", *a], check=True, capture_output=True, text=True).stdout
+    run_("modprobe", "nbd", "max_part=16")
+    run_("qemu-nbd", "--connect=/dev/nbd0", "--format=qcow2", overlay)
+    mnt = os.path.join(work, "boot")
+    os.makedirs(mnt, exist_ok=True)
+    try:
+        run_("udevadm", "settle")
+        time.sleep(2)
+        part = run_("blkid", "-t", "TYPE=ext4", "-o", "device", *sorted(
+            f"/dev/{p}" for p in os.listdir("/dev") if p.startswith("nbd0p"))).split()
+        assert len(part) == 1, part
+        run_("mount", part[0], mnt)
+        try:
+            entries = run_("sh", "-c", f"ls {mnt}/loader/entries/*.conf").split()
+            for e in entries:
+                run_("sed", "-i", "s/^options .*/& systemd.default_device_timeout_sec=900/", e)
+                print("test boot entry:", run_("grep", "^options", e).strip()[-60:])
+        finally:
+            run_("umount", mnt)
+    finally:
+        run_("qemu-nbd", "--disconnect", "/dev/nbd0")
 if arch == "amd64":
     qemu, machine = "qemu-system-x86_64", ["-machine", "q35"]
     code, vars_ = "/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"
@@ -32,6 +60,8 @@ else:
     cpu = (["-accel", "kvm", "-cpu", "host"] if kvm
            else ["-accel", "tcg,thread=multi", "-cpu", "max,pauth-impdef=on"])
 shutil.copy(vars_, os.path.join(work, "vars.fd"))
+if not kvm:
+    slow_devices(overlay)
 print(f"{qemu}, {'KVM' if kvm else 'TCG (no /dev/kvm)'}", flush=True)
 
 # Secure Boot off (non-secboot firmware), as on the user's UTM and libvirt machines.
