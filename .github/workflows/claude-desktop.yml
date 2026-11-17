@@ -52,7 +52,6 @@ jobs:
           app=com.anthropic.Claude
           flatpak info --user "$app"
           flatpak info --user -m "$app"
-          flatpak info --user -m org.gnome.Sdk//50
           dbus-run-session -- flatpak run --command=sh "$app" -c '
             set -eu
             cat /app/bin/claude-desktop
@@ -60,8 +59,8 @@ jobs:
             missing=$(ldd "/app/lib/claude-desktop/$exe" | grep "not found" || true)
             [ -z "$missing" ] || { echo "unresolved libraries: $missing"; exit 1; }
             git --version
-            PATH=/app/lib/sdk/node22/bin:$PATH node --version
-            PATH=/app/lib/sdk/node22/bin:$PATH npm --version
+            PATH=/usr/lib/sdk/node22/bin:$PATH node --version
+            PATH=/usr/lib/sdk/node22/bin:$PATH npm --version
           '
           ls ~/.local/share/flatpak/exports/share/applications/
           cat ~/.local/share/flatpak/exports/share/applications/$app.desktop
