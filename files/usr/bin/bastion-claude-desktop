@@ -335,10 +335,17 @@ def find_app(root):
     helpers = {"chrome-sandbox", "chrome_crashpad_handler"}
     exes = []
     for p in appdir.iterdir():
-        if p.is_file() and not p.is_symlink() and p.name not in helpers and os.access(p, os.X_OK):
+        if (p.is_file() and not p.is_symlink() and p.name not in helpers
+                and ".so" not in p.name and os.access(p, os.X_OK)):
             with open(p, "rb") as f:
                 if f.read(4) == b"\x7fELF":
                     exes.append(p.name)
+    # The .deb's launcher names it when it is a symlink into the app directory.
+    launcher = root / "usr/bin" / PACKAGE
+    if launcher.is_symlink():
+        target = (launcher.parent / os.readlink(launcher)).resolve()
+        if target.parent == appdir.resolve() and target.name in exes:
+            return appdir, target.name
     if len(exes) != 1:
         die(f"expected one Electron executable in {appdir}, found {exes}")
     return appdir, exes[0]
