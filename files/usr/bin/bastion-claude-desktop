@@ -12,8 +12,9 @@ is republishing it (it is Anthropic's software), so each machine fetches and wra
      signature from it. Only the text gpg verified is read, never the downloaded file.
   2. The Packages index must match its SHA256 in InRelease, and the .deb its SHA256 in Packages.
   3. The .deb's Electron app goes into /app of a Flatpak whose runtime is org.gnome.Sdk//50, so
-     git (and the rest of the SDK) is there for the Code tab, with node from the SDK's node22
-     extension. No toolbox and no org.freedesktop.Flatpak access: either is a sandbox escape.
+     git (and the rest of the SDK) is there for the Code tab, with node from the node22 SDK
+     extension (mounted at /app/lib/sdk/node22). No toolbox and no org.freedesktop.Flatpak
+     access: either is a sandbox escape.
   4. The build is exported to a local repo and installed from it (--user), so later runs are
      ordinary Flatpak updates.
 
@@ -74,7 +75,7 @@ FINISH_ARGS = [
 WRAPPER = """#!/bin/sh
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 mkdir -p "$CLAUDE_CONFIG_DIR"
-[ -d /usr/lib/sdk/node22/bin ] && PATH="/usr/lib/sdk/node22/bin:$PATH"
+[ -d /app/lib/sdk/node22/bin ] && PATH="/app/lib/sdk/node22/bin:$PATH"
 export PATH
 exec /app/lib/claude-desktop/@EXE@ --no-sandbox --ozone-platform-hint=auto "$@"
 """
@@ -309,16 +310,21 @@ def ensure_runtimes():
     if not installed(sdk):
         log(f"installing {sdk} (git, compilers and the SDK's libraries; about 1 GB)")
         flatpak("install", "--user", "-y", "--noninteractive", RUNTIME_REMOTE, sdk)
-    # The node extension's branch is whatever freedesktop base this GNOME SDK is built on.
-    meta = flatpak("info", "-m", sdk, capture=True).stdout
-    m = re.search(r"\[Extension org\.freedesktop\.Sdk\.Extension\][^\[]*?^versions?=([^;\n]+)",
-                  meta, re.M)
-    if not m:
-        die(f"{sdk} declares no org.freedesktop.Sdk.Extension point")
-    node = f"{NODE_EXT}//{m.group(1).strip()}"
+    node = f"{NODE_EXT}//{freedesktop_base(sdk)}"
     if not installed(node):
         log(f"installing {node}")
         flatpak("install", "--user", "-y", "--noninteractive", RUNTIME_REMOTE, node)
+
+
+def freedesktop_base(sdk):
+    """The freedesktop branch this GNOME SDK is built on (25.08 for GNOME 50), read from the GL
+    extension point it declares. SDK extensions have to match it."""
+    meta = flatpak("info", "-m", sdk, capture=True).stdout
+    m = re.search(r"\[Extension org\.freedesktop\.Platform\.GL\][^\[]*?^versions?=([^;\n]+)",
+                  meta, re.M)
+    if not m:
+        die(f"cannot tell the freedesktop base of {sdk}:\n{meta}")
+    return m.group(1).strip()
 
 
 def find_app(root):
@@ -412,7 +418,14 @@ def build_and_install(deb, version, work):
     build = work / "build"
     flatpak("build-init", str(build), APP_ID, RUNTIME, RUNTIME, RUNTIME_BRANCH)
     assemble(root, build / "files")
-    flatpak("build-finish", str(build), "--command=claude-desktop", *FINISH_ARGS)
+    # The GNOME SDK declares no point for SDK extensions, so the app does: node22 is mounted at
+    # /app/lib/sdk/node22 when installed.
+    (build / "files/lib/sdk").mkdir()
+    ext = "--extension=org.freedesktop.Sdk.Extension="
+    flatpak("build-finish", str(build), "--command=claude-desktop", *FINISH_ARGS,
+            f"{ext}directory=lib/sdk", f"{ext}subdirectories=true",
+            f"{ext}version={freedesktop_base(f'{RUNTIME}//{RUNTIME_BRANCH}')}",
+            f"{ext}no-autodownload=true")
     repo = DATA / "repo"
     # --disable-sandbox: SELinux denies flatpak_bubblewrap_t running flatpak-validate-icon.
     flatpak("build-export", "--disable-sandbox", f"--subject=claude-desktop {version}",
