@@ -1,0 +1,71 @@
+# Test bastion-claude-desktop, the script that builds Claude Desktop as a Flatpak on each machine.
+#
+# Runs the same script a user runs, against Anthropic's live apt repository, on both arches, then
+# checks the installed app: its libraries resolve in the GNOME runtime, and git and node are there
+# for the Code tab. Weekly, so a change in Anthropic's .deb layout shows up here before a user's
+# daily update trips on it. Nothing is published: the build stays on the runner.
+name: claude-desktop
+
+on:
+  schedule:
+    - cron: "0 9 * * 2"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/claude-desktop.yml
+      - files/usr/bin/bastion-claude-desktop
+      - files/usr/share/bastion/flatpak-filters/flathub-claude-desktop-only
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq flatpak gnupg zstd dbus
+          # Ubuntu 24.04 confines unprivileged user namespaces, which bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build and install
+        env:
+          BASTION_SHARE: ${{ github.workspace }}/files/usr/share/bastion
+        run: python3 -I files/usr/bin/bastion-claude-desktop
+
+      - name: Check the app
+        run: |
+          set -euo pipefail
+          app=com.anthropic.Claude
+          flatpak info --user "$app"
+          flatpak info --user -m "$app"
+          dbus-run-session -- flatpak run --command=sh "$app" -c '
+            set -eu
+            cat /app/bin/claude-desktop
+            exe=$(sed -n "s|^exec /app/lib/claude-desktop/\([^ ]*\).*|\1|p" /app/bin/claude-desktop)
+            missing=$(ldd "/app/lib/claude-desktop/$exe" | grep "not found" || true)
+            [ -z "$missing" ] || { echo "unresolved libraries: $missing"; exit 1; }
+            git --version
+            PATH=/usr/lib/sdk/node22/bin:$PATH node --version
+            PATH=/usr/lib/sdk/node22/bin:$PATH npm --version
+          '
+          ls ~/.local/share/flatpak/exports/share/applications/
+          cat ~/.local/share/flatpak/exports/share/applications/$app.desktop
+
+      - name: A second run is a no-op
+        env:
+          BASTION_SHARE: ${{ github.workspace }}/files/usr/share/bastion
+        run: python3 -I files/usr/bin/bastion-claude-desktop | tee out.txt && grep -q "installed and current" out.txt

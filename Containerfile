@@ -215,6 +215,8 @@ RUN set -eux; \
     done; \
     mkdir -p /usr/lib/systemd/user/timers.target.wants; \
     ln -sf ../bastion-tripwire-notify.timer /usr/lib/systemd/user/timers.target.wants/bastion-tripwire-notify.timer; \
+    # Claude Desktop updates (a no-op for users who never ran bastion-claude-desktop).
+    ln -sf ../bastion-claude-desktop-update.timer /usr/lib/systemd/user/timers.target.wants/bastion-claude-desktop-update.timer; \
     mkdir -p /usr/lib/systemd/user/default.target.wants; \
     ln -sf ../bastion-first-login-apps.service /usr/lib/systemd/user/default.target.wants/bastion-first-login-apps.service; \
     ln -sf ../bastion-amnesic-menu.service /usr/lib/systemd/system/multi-user.target.wants/bastion-amnesic-menu.service; \

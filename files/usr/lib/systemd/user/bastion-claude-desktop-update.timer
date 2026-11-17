@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for a new Claude Desktop daily
+
+[Timer]
+OnStartupSec=10min
+OnUnitActiveSec=1d
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

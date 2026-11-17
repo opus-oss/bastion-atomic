@@ -39,6 +39,7 @@ cosign verify --new-bundle-format=false --key cosign.pub "$disk" >/dev/null && o
 
 - Switch image: `run0 bash -c 'rpm-ostree rebase ostree-image-signed:docker://ghcr.io/opus-oss/bastion-atomic-vm:latest'`
 - Update: `rpm-ostree upgrade`. Undo: `rpm-ostree rollback`.
+- Claude Desktop: `bastion-claude-desktop` (no root). Builds a Flatpak from Anthropic's signed apt repo, then updates itself daily. Code tab sees `~/Projects` only; more with `flatpak override --user --filesystem=~/Other com.anthropic.Claude`.
 
 ## Features
 
@@ -53,6 +54,7 @@ cosign verify --new-bundle-format=false --key cosign.pub "$disk" >/dev/null && o
 - [x] **Survives rebases**: services enabled from `/usr`, replaced services held off, so a machine's old `/etc` can't silently turn the firewall or resolver off.
 - [x] **Nightly rebuilds** pick up secureblue fixes; the build fails rather than ship if a patch to upstream stops applying.
 - [x] **Ready-made VM disk**: signed, boot-tested qcow2 per arch on ghcr.
+- [x] **Claude Desktop as a Flatpak**: built locally from Anthropic's official .deb (key pinned by fingerprint, InRelease → Packages → .deb checked by sha256), sandboxed by bubblewrap, git and node from the GNOME SDK. No layered packages, no toolbox.
 - [x] **Verified Whonix** for libvirt (`whonix.sh`, signing key pinned by fingerprint).
 - [x] Stricter than secureblue: `ptrace_scope=2`; Intel ME, `sp5100_tco`, `pcspkr`, webcam modules blocked.
 - [x] Opus theme across GNOME Shell, libadwaita, GTK3, Ptyxis; first-login app installer.

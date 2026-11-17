@@ -134,8 +134,11 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
 
 ## Open work
 
-- Claude Desktop: Anthropic's Linux build is an official beta for Ubuntu and Debian only. The
-  community `.rpm` from aaddrick/claude-desktop-debian repackages that build. Being tested in a
-  VM before anything goes into an image.
+- Claude Desktop: `bastion-claude-desktop` (`files/usr/bin`) builds it per machine as a `--user`
+  Flatpak (`com.anthropic.Claude`) from Anthropic's signed apt repo, on `org.gnome.Sdk//50` as the
+  runtime (git) plus the SDK's node22 extension; daily user timer updates it. Built locally because
+  the binary is Anthropic's and is not republished. `claude-desktop.yml` tests it weekly in CI.
+  `--no-sandbox` because Chromium's sandbox can't nest without userns (zypak not tried yet). Never
+  toolbox or `--talk-name=org.freedesktop.Flatpak` (sandbox escape).
 - Secure Boot with a MOK key that signs forge's and the vm image's kernels in CI (shim route; never replace the
   platform keys).

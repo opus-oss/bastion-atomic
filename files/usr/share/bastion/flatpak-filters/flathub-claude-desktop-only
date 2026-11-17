@@ -1,0 +1,10 @@
+# Unverified Flathub, narrowed to what bastion-claude-desktop builds on: the GNOME SDK as the app's
+# runtime (git and the rest of the toolchain for the Code tab), node from its node22 extension, and
+# the GL drivers and codecs Flatpak installs alongside a runtime.
+deny *
+allow runtime/org.gnome.Sdk/*
+allow runtime/org.gnome.Sdk.Locale/*
+allow runtime/org.freedesktop.Sdk.Extension.node22/*
+allow runtime/org.freedesktop.Platform.GL.default/*
+allow runtime/org.freedesktop.Platform.openh264/*
+allow runtime/org.freedesktop.Platform.codecs-extra/*

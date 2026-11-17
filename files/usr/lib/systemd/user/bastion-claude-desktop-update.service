@@ -1,0 +1,10 @@
+[Unit]
+Description=Update Claude Desktop from Anthropic's signed apt repository
+# Nothing to do until the user has run bastion-claude-desktop once.
+ConditionPathExists=%h/.local/share/bastion/claude-desktop/version
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bastion-claude-desktop --auto
+Nice=10
+TimeoutStartSec=1h

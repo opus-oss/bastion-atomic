@@ -1,0 +1,496 @@
+#!/usr/bin/python3 -I
+"""Claude Desktop as a Flatpak, built on this machine from Anthropic's signed apt repository.
+
+    bastion-claude-desktop            install, or update if Anthropic published a newer version
+    bastion-claude-desktop --force    rebuild even if the version is unchanged (or older)
+    bastion-claude-desktop --auto     what the daily user timer runs: does nothing until installed
+
+Anthropic ships Claude Desktop for Linux only as a .deb. Layering it with rpm-ostree is out, and so
+is republishing it (it is Anthropic's software), so each machine fetches and wraps it itself:
+
+  1. key.asc must have exactly the pinned primary fingerprint; InRelease must carry a valid
+     signature from it. Only the text gpg verified is read, never the downloaded file.
+  2. The Packages index must match its SHA256 in InRelease, and the .deb its SHA256 in Packages.
+  3. The .deb's Electron app goes into /app of a Flatpak whose runtime is org.gnome.Sdk//50, so
+     git (and the rest of the SDK) is there for the Code tab, with node from the SDK's node22
+     extension. No toolbox and no org.freedesktop.Flatpak access: either is a sandbox escape.
+  4. The build is exported to a local repo and installed from it (--user), so later runs are
+     ordinary Flatpak updates.
+
+Chromium's own sandbox cannot nest inside bubblewrap without unprivileged user namespaces, which
+secureblue turns off, so the app runs with --no-sandbox and bubblewrap is the sandbox.
+"""
+import argparse
+import gzip
+import hashlib
+import lzma
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path
+
+APP_ID = "com.anthropic.Claude"
+BASE = "https://downloads.claude.ai/claude-desktop"
+REPO = f"{BASE}/apt/stable"
+SUITE = "stable"
+PACKAGE = "claude-desktop"
+FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
+
+RUNTIME = "org.gnome.Sdk"
+RUNTIME_BRANCH = "50"
+NODE_EXT = "org.freedesktop.Sdk.Extension.node22"
+# Unverified Flathub narrowed to the SDK, its node extension and the drivers/codecs it pulls in.
+RUNTIME_REMOTE = "flathub-claude-desktop-only"
+FLATHUB = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+LOCAL_REMOTE = "bastion-claude-desktop"
+
+SHARE = Path(os.environ.get("BASTION_SHARE", "/usr/share/bastion"))
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "bastion/claude-desktop"
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "bastion/claude-desktop"
+
+# Grants beyond the default sandbox, each for a reason:
+FINISH_ARGS = [
+    "--share=ipc", "--share=network",
+    "--socket=wayland", "--socket=fallback-x11", "--device=dri",
+    # Electron keeps its login token encrypted with a key from the Secret Service.
+    "--talk-name=org.freedesktop.secrets",
+    "--talk-name=org.freedesktop.Notifications",
+    "--talk-name=org.kde.StatusNotifierWatcher",
+    # Code tab: the one folder it may work in. Add others with `flatpak override --user
+    # --filesystem=~/Other com.anthropic.Claude`.
+    "--filesystem=~/Projects:create",
+    # $HOME is empty in the sandbox: keep Claude Code's state (~/.claude) across launches. The
+    # wrapper points CLAUDE_CONFIG_DIR at it, so .claude.json lives in there too.
+    "--persist=.claude",
+]
+
+WRAPPER = """#!/bin/sh
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+[ -d /usr/lib/sdk/node22/bin ] && PATH="/usr/lib/sdk/node22/bin:$PATH"
+export PATH
+exec /app/lib/claude-desktop/@EXE@ --no-sandbox --ozone-platform-hint=auto "$@"
+"""
+
+
+def log(msg):
+    print(f"bastion-claude-desktop: {msg}", flush=True)
+
+
+def die(msg):
+    log(f"error: {msg}")
+    sys.exit(1)
+
+
+def run(*cmd, check=True, capture=False):
+    r = subprocess.run(cmd, text=True, capture_output=capture)
+    if check and r.returncode:
+        die(f"{' '.join(cmd)} failed ({r.returncode})" + (f": {r.stderr.strip()}" if capture else ""))
+    return r
+
+
+def fetch(url, dest):
+    if not url.startswith("https://"):
+        die(f"refusing non-HTTPS URL {url}")
+    h = hashlib.sha256()
+    size = 0
+    with urllib.request.urlopen(url, timeout=60) as r, open(dest, "wb") as f:
+        while chunk := r.read(1 << 20):
+            h.update(chunk)
+            size += len(chunk)
+            f.write(chunk)
+    return h.hexdigest(), size
+
+
+def check_hash(path, sha256, size, what):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    got = (h.hexdigest(), path.stat().st_size)
+    if got != (sha256.lower(), int(size)):
+        die(f"{what}: sha256/size {got} does not match the signed index ({sha256}, {size})")
+
+
+# --- Debian version comparison (dpkg's algorithm), to refuse downgrades --------------------------
+def _order(c):
+    if c.isdigit():
+        return 0
+    if c.isalpha():
+        return ord(c)
+    if c == "~":
+        return -1
+    return ord(c) + 256 if c else 0
+
+
+def _verrevcmp(a, b):
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while (i < len(a) and not a[i].isdigit()) or (j < len(b) and not b[j].isdigit()):
+            ac = _order(a[i]) if i < len(a) else 0
+            bc = _order(b[j]) if j < len(b) else 0
+            if ac != bc:
+                return ac - bc
+            i += 1
+            j += 1
+        while i < len(a) and a[i] == "0":
+            i += 1
+        while j < len(b) and b[j] == "0":
+            j += 1
+        diff = 0
+        while i < len(a) and a[i].isdigit() and j < len(b) and b[j].isdigit():
+            diff = diff or ord(a[i]) - ord(b[j])
+            i += 1
+            j += 1
+        if i < len(a) and a[i].isdigit():
+            return 1
+        if j < len(b) and b[j].isdigit():
+            return -1
+        if diff:
+            return diff
+    return 0
+
+
+def vercmp(a, b):
+    def split(v):
+        epoch, _, rest = v.rpartition(":") if ":" in v else ("0", "", v)
+        up, _, rev = rest.rpartition("-") if "-" in rest else (rest, "", "")
+        return int(epoch or 0), up, rev
+    ea, ua, ra = split(a)
+    eb, ub, rb = split(b)
+    return (ea > eb) - (ea < eb) or _verrevcmp(ua, ub) or _verrevcmp(ra, rb)
+
+
+# --- Signed apt index -> verified .deb -----------------------------------------------------------
+def parse_stanzas(text):
+    out = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        fields, key = {}, None
+        for line in block.splitlines():
+            if line[:1] in (" ", "\t") and key:
+                fields[key] += "\n" + line.strip()
+            elif ":" in line:
+                key, _, val = line.partition(":")
+                fields[key] = val.strip()
+        out.append(fields)
+    return out
+
+
+def verified_inrelease(work):
+    gnupg = work / "gnupg"
+    gnupg.mkdir(mode=0o700)
+    gpg = ["gpg", "--homedir", str(gnupg), "--batch", "--no-tty", "--quiet"]
+    fetch(f"{BASE}/key.asc", work / "key.asc")
+    run(*gpg, "--import", str(work / "key.asc"), capture=True)
+    listing = run(*gpg, "--with-colons", "--fingerprint", capture=True).stdout.splitlines()
+    primaries, want_fpr = [], False
+    for line in listing:
+        f = line.split(":")
+        if f[0] == "pub":
+            want_fpr = True
+        elif f[0] == "fpr" and want_fpr:
+            primaries.append(f[9])
+            want_fpr = False
+    if primaries != [FINGERPRINT]:
+        die(f"key.asc holds {primaries}, expected exactly {FINGERPRINT}")
+    log(f"signing key {FINGERPRINT} matches the pin")
+
+    fetch(f"{REPO}/dists/{SUITE}/InRelease", work / "InRelease")
+    r = run(*gpg, "--status-fd", "1", "--output", str(work / "Release"), "--decrypt",
+            str(work / "InRelease"), check=False, capture=True)
+    validsig = [l.split() for l in r.stdout.splitlines() if l.startswith("[GNUPG:] VALIDSIG ")]
+    if r.returncode or not validsig or validsig[0][-1] != FINGERPRINT:
+        die(f"InRelease is not validly signed by {FINGERPRINT}: {r.stderr.strip()}")
+    release = parse_stanzas((work / "Release").read_text())[0]
+    if SUITE not in (release.get("Suite"), release.get("Codename")):
+        die(f"InRelease is for {release.get('Suite')}/{release.get('Codename')}, not {SUITE}")
+    until = release.get("Valid-Until")
+    if until:
+        from email.utils import parsedate_to_datetime
+        from datetime import datetime, timezone
+        if parsedate_to_datetime(until) < datetime.now(timezone.utc):
+            die(f"InRelease expired at {until} (a stale or replayed index)")
+    log(f"InRelease signature good ({release.get('Date', 'undated')})")
+    return release
+
+
+def verified_deb(work, arch):
+    release = verified_inrelease(work)
+    sums = {}
+    for line in release.get("SHA256", "").splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            sums[parts[2]] = (parts[0], parts[1])
+    for suffix, opener in ((".xz", lzma.open), (".gz", gzip.open), ("", open)):
+        name = f"main/binary-{arch}/Packages{suffix}"
+        if name in sums:
+            break
+    else:
+        die(f"InRelease lists no Packages index for {arch}")
+    pk = work / f"Packages{suffix}"
+    fetch(f"{REPO}/dists/{SUITE}/{name}", pk)
+    check_hash(pk, *sums[name], name)
+    with opener(pk, "rt") as f:
+        stanzas = parse_stanzas(f.read())
+    cands = [s for s in stanzas if s.get("Package") == PACKAGE and s.get("Architecture") == arch]
+    if not cands:
+        die(f"no {PACKAGE} for {arch} in the index")
+    best = cands[0]
+    for s in cands[1:]:
+        if vercmp(s["Version"], best["Version"]) > 0:
+            best = s
+    filename = best["Filename"]
+    if filename.startswith("/") or ".." in filename.split("/"):
+        die(f"suspicious Filename {filename}")
+    return best, filename
+
+
+def download_deb(work, best, filename):
+    deb = work / "claude-desktop.deb"
+    log(f"downloading {filename}")
+    fetch(f"{REPO}/{filename}", deb)
+    check_hash(deb, best["SHA256"], best["Size"], filename)
+    log(f"{filename}: sha256 matches the signed index")
+    return deb
+
+
+def extract_deb(deb, dest):
+    """A .deb is an ar archive; take data.tar.* out of it and unpack that."""
+    with open(deb, "rb") as f:
+        if f.read(8) != b"!<arch>\n":
+            die("not a .deb (ar) archive")
+        while hdr := f.read(60):
+            name = hdr[:16].decode().strip().rstrip("/")
+            size = int(hdr[48:58].decode().strip())
+            data = f.read(size)
+            if size % 2:
+                f.read(1)
+            if name.startswith("data.tar"):
+                break
+        else:
+            die("no data.tar in the .deb")
+    tar = dest.parent / name
+    if name.endswith(".zst"):
+        try:
+            from compression import zstd  # Python 3.14+
+            tar.write_bytes(zstd.decompress(data))
+        except ImportError:
+            tar.write_bytes(subprocess.run(["zstd", "-dc"], input=data, capture_output=True,
+                                           check=True).stdout)
+    else:
+        tar.write_bytes(data)
+    with tarfile.open(tar) as t:
+        t.extractall(dest, filter="tar")  # no absolute paths, no "..", setuid bits dropped
+    tar.unlink()
+
+
+# --- Flatpak ---------------------------------------------------------------------------------------
+def flatpak(*args, check=True, capture=False):
+    return run("flatpak", *args, check=check, capture=capture)
+
+
+def installed(ref):
+    return flatpak("info", ref, check=False, capture=True).returncode == 0
+
+
+def ensure_runtimes():
+    filt = SHARE / "flatpak-filters" / RUNTIME_REMOTE
+    if not filt.is_file():
+        die(f"missing {filt}")
+    flatpak("remote-add", "--user", "--if-not-exists", f"--filter={filt}", RUNTIME_REMOTE, FLATHUB)
+    sdk = f"{RUNTIME}//{RUNTIME_BRANCH}"
+    if not installed(sdk):
+        log(f"installing {sdk} (git, compilers and the SDK's libraries; about 1 GB)")
+        flatpak("install", "--user", "-y", "--noninteractive", RUNTIME_REMOTE, sdk)
+    # The node extension's branch is whatever freedesktop base this GNOME SDK is built on.
+    meta = flatpak("info", "-m", sdk, capture=True).stdout
+    m = re.search(r"\[Extension org\.freedesktop\.Sdk\.Extension\][^\[]*?^versions?=([^;\n]+)",
+                  meta, re.M)
+    if not m:
+        die(f"{sdk} declares no org.freedesktop.Sdk.Extension point")
+    node = f"{NODE_EXT}//{m.group(1).strip()}"
+    if not installed(node):
+        log(f"installing {node}")
+        flatpak("install", "--user", "-y", "--noninteractive", RUNTIME_REMOTE, node)
+
+
+def find_app(root):
+    asars = [p for p in root.rglob("resources/app.asar") if p.is_file()]
+    if len(asars) != 1:
+        die(f"expected one Electron app (resources/app.asar), found {asars}")
+    appdir = asars[0].parent.parent
+    helpers = {"chrome-sandbox", "chrome_crashpad_handler"}
+    exes = []
+    for p in appdir.iterdir():
+        if p.is_file() and not p.is_symlink() and p.name not in helpers and os.access(p, os.X_OK):
+            with open(p, "rb") as f:
+                if f.read(4) == b"\x7fELF":
+                    exes.append(p.name)
+    if len(exes) != 1:
+        die(f"expected one Electron executable in {appdir}, found {exes}")
+    return appdir, exes[0]
+
+
+def png_size(path):
+    with open(path, "rb") as f:
+        head = f.read(24)
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def assemble(root, files):
+    """Lay the .deb's app out under /app: lib/claude-desktop, bin, the .desktop file, icons."""
+    for p in ("usr/bin/claude-desktop",):
+        q = root / p
+        if q.is_symlink():
+            log(f"{p} -> {os.readlink(q)}")
+        elif q.is_file():
+            log(f"{p} (the .deb's launcher, replaced by the Flatpak wrapper):\n{q.read_text()}")
+    appdir, exe = find_app(root)
+    log(f"Electron app: /{appdir.relative_to(root)}, executable {exe}")
+    shutil.copytree(appdir, files / "lib/claude-desktop", symlinks=True)
+    (files / "lib/claude-desktop/chrome-sandbox").unlink(missing_ok=True)
+    (files / "bin").mkdir(parents=True)
+    wrapper = files / "bin/claude-desktop"
+    wrapper.write_text(WRAPPER.replace("@EXE@", exe))
+    wrapper.chmod(0o755)
+
+    desktops = sorted((root / "usr/share/applications").glob("*.desktop"))
+    if len(desktops) != 1:
+        die(f"expected one .desktop file, found {desktops}")
+    log(f"desktop file: {desktops[0].name}")
+    icon_name, lines = None, []
+    for line in desktops[0].read_text().splitlines():
+        if line.startswith("Exec="):
+            rest = line[5:].split(None, 1)
+            line = "Exec=claude-desktop" + (f" {rest[1]}" if len(rest) > 1 else "")
+        elif line.startswith("TryExec="):
+            continue
+        elif line.startswith("Icon="):
+            icon_name = line[5:].strip()
+            line = f"Icon={APP_ID}"
+        lines.append(line)
+    if not icon_name:
+        die("the .desktop file names no icon")
+    apps = files / "share/applications"
+    apps.mkdir(parents=True)
+    (apps / f"{APP_ID}.desktop").write_text("\n".join(lines) + "\n")
+
+    stem = Path(icon_name).stem
+    found = [p for p in (root / "usr/share/icons/hicolor").glob(f"*/apps/{stem}.*")
+             if p.suffix in (".png", ".svg")]
+    if not found:
+        found = [p for p in (root / "usr/share/pixmaps").glob(f"{stem}.*") if p.suffix == ".png"]
+        if not found and icon_name.startswith("/") and (root / icon_name[1:]).is_file():
+            found = [root / icon_name[1:]]
+    if not found:
+        die(f"icon {icon_name} not in the .deb")
+    for p in found:
+        if p.suffix == ".svg":
+            size = "scalable"
+        else:
+            w, h = png_size(p)
+            size = f"{w}x{h}" if w == h and w <= 512 else None
+        if size:
+            dest = files / f"share/icons/hicolor/{size}/apps/{APP_ID}{p.suffix}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(p, dest)
+    if not (files / "share/icons").exists():
+        die(f"no usable icon size among {found}")
+
+
+def build_and_install(deb, version, work):
+    root = work / "root"
+    root.mkdir()
+    extract_deb(deb, root)
+    build = work / "build"
+    flatpak("build-init", str(build), APP_ID, RUNTIME, RUNTIME, RUNTIME_BRANCH)
+    assemble(root, build / "files")
+    flatpak("build-finish", str(build), "--command=claude-desktop", *FINISH_ARGS)
+    repo = DATA / "repo"
+    # --disable-sandbox: SELinux denies flatpak_bubblewrap_t running flatpak-validate-icon.
+    flatpak("build-export", "--disable-sandbox", f"--subject=claude-desktop {version}",
+            str(repo), str(build), "stable")
+    flatpak("build-update-repo", "--prune", "--prune-depth=1", str(repo))
+    flatpak("remote-add", "--user", "--if-not-exists", "--no-gpg-verify", LOCAL_REMOTE,
+            f"file://{repo}")
+
+    if flatpak("info", "--system", APP_ID, check=False, capture=True).returncode == 0:
+        die(f"{APP_ID} is installed system-wide; remove that first")
+    info = flatpak("info", "--user", "--show-origin", APP_ID, check=False, capture=True)
+    origin = info.stdout.strip() if info.returncode == 0 else None
+    if origin and origin != LOCAL_REMOTE:
+        # An earlier hand-made build. Its data in ~/.var/app stays.
+        log(f"replacing {APP_ID} from {origin}; its data is kept")
+        flatpak("uninstall", "--user", "-y", "--noninteractive", APP_ID)
+        origin = None
+    if origin:
+        flatpak("update", "--user", "-y", "--noninteractive", APP_ID)
+    else:
+        flatpak("install", "--user", "-y", "--noninteractive", LOCAL_REMOTE, APP_ID)
+
+
+def notify(icon, title, body):
+    subprocess.run(["notify-send", "-a", "bastion", "-i", icon, title, body],
+                   stderr=subprocess.DEVNULL, check=False)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Build and install Claude Desktop as a Flatpak.")
+    ap.add_argument("--force", action="store_true", help="rebuild even if not newer")
+    ap.add_argument("--auto", action="store_true", help="update only if already installed")
+    ap.add_argument("--keep-work", action="store_true", help="keep the build directory (CI)")
+    args = ap.parse_args()
+
+    stamp = DATA / "version"
+    current = stamp.read_text().strip() if stamp.exists() else None
+    if args.auto and (current is None or not installed(APP_ID)):
+        return
+    if shutil.which("gpg") is None or shutil.which("flatpak") is None:
+        die("needs gpg and flatpak")
+    machine = platform.machine()
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine) or die(f"unsupported {machine}")
+
+    DATA.mkdir(parents=True, exist_ok=True)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(dir=CACHE))
+    try:
+        best, filename = verified_deb(work, arch)
+        version = best["Version"]
+        have_app = installed(APP_ID)
+        if current and have_app and not args.force:
+            c = vercmp(version, current)
+            if c == 0:
+                log(f"{version} is installed and current")
+                return
+            if c < 0:
+                die(f"the repository offers {version}, older than installed {current}; "
+                    "refusing a downgrade (--force overrides)")
+        log(f"building {PACKAGE} {version} ({arch})")
+        ensure_runtimes()
+        deb = download_deb(work, best, filename)
+        build_and_install(deb, version, work)
+        stamp.write_text(version + "\n")
+        log(f"installed {APP_ID} {version}. Start it from the app grid or: flatpak run {APP_ID}")
+        if args.auto:
+            notify("software-update-available", "Claude Desktop updated", version)
+    except (SystemExit, Exception) as e:
+        if args.auto and not (isinstance(e, SystemExit) and not e.code):
+            notify("dialog-warning", "Claude Desktop update failed",
+                   "Run bastion-claude-desktop in a terminal to see why.")
+        raise
+    finally:
+        if args.keep_work:
+            log(f"work directory kept: {work}")
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
