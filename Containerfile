@@ -284,6 +284,9 @@ COPY vm/ /
 # SELinux confines the agent and both booleans default off; -N sets them in the policy store
 # without loading it, since there is no running kernel policy in a build.
 RUN set -eux; \
+    # rpm-ostree never applies kargs.d, so a VM rebased onto this image would boot without
+    # secureblue's hardening kargs. bastion-kargs.service stages any that are missing, every boot.
+    ln -s ../bastion-kargs.service /usr/lib/systemd/system/multi-user.target.wants/bastion-kargs.service; \
     semanage boolean -N -m --on virt_qemu_ga_run_unconfined; \
     semanage boolean -N -m --on virt_qemu_ga_read_nonsecurity_files; \
     # -C lists only locally customised booleans, so both must be there.

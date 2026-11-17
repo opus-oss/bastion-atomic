@@ -1,0 +1,15 @@
+# Stages the image's kargs.d (secureblue's hardening kargs and bastion's) on a machine that got
+# the image through `rpm-ostree rebase`, which never applies them (/usr/libexec/bastion-kargs).
+# Enabled in the vm image only. A no-op once they are set; if it adds any, they apply from the next
+# boot. Not in an amnesic boot, which keeps /boot read-only. To stop it, create
+# /etc/bastion/disable-kargs-sync.
+[Unit]
+Description=Apply the image's kernel arguments (kargs.d)
+ConditionKernelCommandLine=!bastion.amnesic
+ConditionPathExists=/run/ostree-booted
+ConditionPathExists=!/etc/bastion/disable-kargs-sync
+After=local-fs.target dbus.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bastion-kargs

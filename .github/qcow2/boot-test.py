@@ -4,11 +4,12 @@
 The image boots with loglevel=0 and no serial console, so the guest agent is the only way in.
 It is started by udev once systemd is up, and the vm image lets it run commands (guest-exec).
 
-Checks: GNOME on screen, one deployment tracking the signed image, SELinux enforcing.
+Checks: GNOME on screen, one deployment tracking the signed image (so bastion-kargs staged
+nothing), SELinux enforcing, every kargs.d karg on the kernel command line.
 
 usage: boot-test.py <arch: amd64|arm64> <disk.qcow2> <expected origin> <timeout seconds>
 """
-import base64, json, os, re, shutil, socket, subprocess, sys, time
+import base64, json, os, re, shutil, socket, subprocess, sys, time, tomllib
 
 arch, disk, want_origin, timeout = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 work = os.path.abspath("boot-test")
@@ -203,7 +204,21 @@ try:
     if enforce != "1":
         failed.append(f"SELinux enforce is {enforce!r}")
 
-    print("cmdline:", sh("cat /proc/cmdline"))
+    cmdline = sh("cat /proc/cmdline")
+    print("cmdline:", cmdline)
+    # bootc install lays the disk out with the image's kargs.d (secureblue's hardening kargs and
+    # bastion's); a machine that boots without them has lost most of its kernel hardening.
+    machine = {"amd64": "x86_64", "arm64": "aarch64"}[arch]
+    want = []
+    for name in sh("ls /usr/lib/bootc/kargs.d/").split():
+        if name.endswith(".toml"):
+            d = tomllib.loads(sh(f"cat /usr/lib/bootc/kargs.d/{name}"))
+            if machine in d.get("match-architectures", [machine]):
+                want += d.get("kargs", [])
+    missing = [k for k in want if k not in cmdline.split()]
+    print(f"kargs.d: {len(want)} kargs, missing: {missing or 'none'}")
+    if not want or missing:
+        failed.append(f"kargs.d not applied: {missing or 'no kargs.d found'}")
 finally:
     try:
         qga({"execute": "guest-shutdown"}, wait=5)

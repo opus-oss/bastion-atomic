@@ -1,0 +1,90 @@
+#!/usr/bin/python3 -I
+"""Apply the image's kargs.d to the default deployment:  bastion-kargs [--commit <ostree commit>]
+
+/usr/lib/bootc/kargs.d (secureblue's 10-secureblue.toml, bastion's 20-bastion.toml) is read by
+`bootc install`, so a disk built with bootc-image-builder boots with it. `rpm-ostree rebase` and
+`rpm-ostree upgrade` never read it: a machine rebased onto the image, from Silverblue or from
+secureblue, boots without any of it (no lockdown karg, no slab_debug, no proc_mem override, no
+rd.shell=0). secureblue leaves that to a manual `ujust set-kargs-hardening`.
+
+This appends every karg the image asks for that the default deployment (the pending one if an
+update is staged, otherwise the booted one) does not already have, with
+`rpm-ostree kargs --append-if-missing`, which stages a new deployment; the kargs then hold from the
+next boot on and carry over to later upgrades. It only adds: a karg a later image drops, or one
+the user removed, is not touched, except that a removed one comes back while the image asks for it.
+
+bastion-kargs.service runs it at every boot of the vm image. install.sh runs it once with
+--commit, the image it just rebased onto, so the first boot of the new image already has them.
+"""
+import os, platform, subprocess, sys, time, tomllib
+
+KARGS_D = "/usr/lib/bootc/kargs.d"
+REPO = "/ostree/repo"
+
+
+def toml_files(commit):
+    """(name, bytes) of each kargs.d file, from /usr or from an ostree commit, in name order."""
+    if commit is None:
+        if not os.path.isdir(KARGS_D):
+            return []
+        return [(n, open(os.path.join(KARGS_D, n), "rb").read())
+                for n in sorted(os.listdir(KARGS_D)) if n.endswith(".toml")]
+    ls = subprocess.run(["ostree", f"--repo={REPO}", "ls", commit, KARGS_D],
+                        capture_output=True, text=True)
+    if ls.returncode != 0:
+        return []
+    names = sorted(line.split()[-1].rsplit("/", 1)[-1] for line in ls.stdout.splitlines()
+                   if line.startswith("-") and line.endswith(".toml"))
+    return [(n, subprocess.run(["ostree", f"--repo={REPO}", "cat", commit, f"{KARGS_D}/{n}"],
+                               capture_output=True, check=True).stdout) for n in names]
+
+
+def wanted(commit):
+    """The kargs the image asks for on this architecture, in file order, without duplicates.
+    match-architectures uses Rust's names, which are uname's for x86_64 and aarch64."""
+    out = []
+    for name, data in toml_files(commit):
+        d = tomllib.loads(data.decode())
+        arches = d.get("match-architectures")
+        if arches is not None and platform.machine() not in arches:
+            continue
+        for k in d.get("kargs", []):
+            if not isinstance(k, str):
+                sys.exit(f"{name}: kargs must be strings")
+            if k not in out:
+                out.append(k)
+    return out
+
+
+def rpm_ostree(*args):
+    """rpm-ostree, retried while another transaction (an automatic update) holds the daemon."""
+    for attempt in range(30):
+        r = subprocess.run(["rpm-ostree", *args], capture_output=True, text=True)
+        if r.returncode == 0:
+            return r.stdout
+        if "ransaction" not in r.stderr or attempt == 29:
+            sys.exit(f"rpm-ostree {' '.join(args)}: {r.stderr.strip()}")
+        time.sleep(20)
+
+
+def main():
+    commit = None
+    if sys.argv[1:2] == ["--commit"] and len(sys.argv) == 3:
+        commit = sys.argv[2]
+    elif sys.argv[1:]:
+        sys.exit(__doc__.splitlines()[0])
+    want = wanted(commit)
+    if not want:
+        print("the image has no kargs.d, nothing to do")
+        return
+    have = rpm_ostree("kargs").split()
+    missing = [k for k in want if k not in have]
+    if not missing:
+        print(f"all {len(want)} kargs from kargs.d are set")
+        return
+    print("adding:", " ".join(missing))
+    rpm_ostree("kargs", *(f"--append-if-missing={k}" for k in missing))
+    print("staged; they apply from the next boot")
+
+
+main()

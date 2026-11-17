@@ -110,10 +110,12 @@ echo "== Rebasing (downloads the image; several minutes)"
 # also means anyone who can write to the registry can write to your laptop.
 rpm-ostree rebase "ostree-image-signed:docker://$IMAGE"
 
-# The image's kargs.d asks for plymouth.enable=0, but rpm-ostree has been seen not to apply a
-# newly added kargs.d file to the staged deployment, so set it directly as well. It is a no-op
-# if it is already there, and carries over to later upgrades.
-rpm-ostree kargs --append-if-missing=plymouth.enable=0 >/dev/null
+# rpm-ostree does not apply the image's kargs.d (secureblue's hardening kargs and bastion's); only
+# `bootc install` does. Append them to the deployment just staged, read from that image's own
+# commit, so its first boot has them. They carry over to later upgrades.
+echo "== Kernel arguments from the image's kargs.d"
+commit=$(rpm-ostree status --json | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["deployments"][0]["checksum"])')
+python3 -I "$repo/files/usr/libexec/bastion-kargs" --commit "$commit"
 
 cat <<'EOF'
 
@@ -130,13 +132,15 @@ Updates come from CI from here on: push a change to the recipe, the image rebuil
 `rpm-ostree upgrade` picks it up. Nothing compiles on this machine.
 EOF
 
-# Coming from stock Silverblue, secureblue's own post-install steps have not run. Its hardening
-# kernel arguments are not applied by a rebase, and its kernel is signed with its own key.
+# Coming from stock Silverblue, secureblue's own post-install steps have not run. Its default
+# hardening kargs are applied above; its optional ones are a question only the user can answer,
+# and its kernel is signed with its own key.
 if [[ ! -d /usr/libexec/secureblue ]]; then
   cat <<'EOF'
 
 This machine was not running secureblue, so after the reboot also run:
-  ujust set-kargs-hardening  secureblue's hardening kernel arguments (a rebase does not apply them)
+  ujust set-kargs-hardening  secureblue's optional hardening kernel arguments (nosmt, the
+                             unstable set; the default set is already applied)
 EOF
   [[ $target == generic && $sb == *"SecureBoot enabled"* ]] && cat <<'EOF'
   ujust enroll-secureblue-secure-boot-key
