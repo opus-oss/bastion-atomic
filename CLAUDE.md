@@ -110,6 +110,16 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
   Mask boot mounts by unit name: `boot-efi.mount` does not come from fstab. `tests/amnesic/run.sh`
   is the CI boot test.
 
+- **qcow2 disks** (`.github/workflows/qcow2.yml`, weekly): bootc-image-builder (pinned by digest)
+  lays out the verified vm image; CI rewrites the deployment's origin to `ostree-image-signed:`
+  (the builder only writes unverified), boots it in QEMU and pushes it to
+  `ghcr.io/opus-oss/bastion-atomic-vm-qcow2:<arch>` as a signed OCI artifact (too big for releases).
+  bootc runs in a build-only copy of the image whose policy accepts `containers-storage`, since
+  secureblue's rejects it. The boot test (`.github/qcow2/boot-test.py`) talks through
+  qemu-guest-agent, which SELinux keeps out of systemctl, journalctl and rpm-ostree, so it reads
+  files and judges the desktop by a QMP screendump. arm64 runners have no KVM: under TCG udev
+  misses systemd's 90 s device timeout, so the test (overlay only) adds a longer one.
+
 ## On the running system
 
 - `bastion-tripwire` (in the image, run as root after boot and daily) compares persistence
@@ -124,8 +134,6 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
 
 ## Open work
 
-- A qcow2 of the `vm` image per arch built by bootc-image-builder (pin it by digest), published
-  as an OCI artifact and signed.
 - Claude Desktop: Anthropic's Linux build is an official beta for Ubuntu and Debian only. The
   community `.rpm` from aaddrick/claude-desktop-debian repackages that build. Being tested in a
   VM before anything goes into an image.

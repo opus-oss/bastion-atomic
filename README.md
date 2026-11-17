@@ -22,6 +22,21 @@ run0 bash install.sh forge    # bastion-atomic-forge  Framework 13 AMD 7040 only
 
 Reboot. Coming from Silverblue, also run `ujust set-kargs-hardening`.
 
+### Ready-made VM disk (UTM, virt-manager)
+
+qcow2 of `bastion-atomic-vm`, rebuilt weekly, boot-tested in CI, already tracking the signed image. Secure Boot off; GNOME Initial Setup creates your account on first boot.
+
+```sh
+# in this repo's clone (for cosign.pub); brew install oras cosign
+disk=ghcr.io/opus-oss/bastion-atomic-vm-qcow2@$(oras resolve ghcr.io/opus-oss/bastion-atomic-vm-qcow2:arm64)   # :amd64 on x86
+cosign verify --new-bundle-format=false --key cosign.pub "$disk" >/dev/null && oras pull "$disk"
+```
+
+- **UTM**: + → Virtualize → Linux (QEMU, not Apple Virtualization) → skip the ISO → set RAM/CPU → tick *Open VM Settings* → Save. In settings, delete the new drive, *New* → *Import* the qcow2 (VirtIO) → Save.
+- **virt-manager**: `run0 bash -c 'install -m 0644 bastion-atomic-vm-amd64.qcow2 /var/lib/libvirt/images/'`, then New VM → *Import existing disk image* → that file, Fedora → *Customize before install* → Firmware: UEFI (non-secboot) → Begin.
+
+### Day to day
+
 - Switch image: `run0 bash -c 'rpm-ostree rebase ostree-image-signed:docker://ghcr.io/opus-oss/bastion-atomic-vm:latest'`
 - Update: `rpm-ostree upgrade`. Undo: `rpm-ostree rollback`.
 
@@ -37,12 +52,12 @@ Reboot. Coming from Silverblue, also run `ujust set-kargs-hardening`.
 - [x] **No NTP**: clock set from HTTPS `Date` headers, moved only when 3 of 5 independent pools agree.
 - [x] **Survives rebases**: services enabled from `/usr`, replaced services held off, so a machine's old `/etc` can't silently turn the firewall or resolver off.
 - [x] **Nightly rebuilds** pick up secureblue fixes; the build fails rather than ship if a patch to upstream stops applying.
+- [x] **Ready-made VM disk**: signed, boot-tested qcow2 per arch on ghcr.
 - [x] **Verified Whonix** for libvirt (`whonix.sh`, signing key pinned by fingerprint).
 - [x] Stricter than secureblue: `ptrace_scope=2`; Intel ME, `sp5100_tco`, `pcspkr`, webcam modules blocked.
 - [x] Opus theme across GNOME Shell, libadwaita, GTK3, Ptyxis; first-login app installer.
 - [x] **Amnesic boot**: an extra GRUB entry per deployment, "(amnesic: nothing is saved)". Disks read-only in the block layer, LUKS opened read-only, root mounted without journal replay, `/etc` and `/var` (homes included) on RAM, `/boot` unmounted, updates off. Gone at power-off. Fails closed: if the RAM layers aren't up, it powers off instead of booting writable. Boot-tested in CI (normal, amnesic, normal; nothing survives). Drives plugged in after boot stay writable.
 - [ ] **USB dead-man switch** that wipes the LUKS key slots. In the NixOS build ([`modules/killswitch.nix`](https://github.com/opus-oss/bastion/blob/main/modules/killswitch.nix)); not yet ported.
-- [ ] Signed qcow2 of the vm image.
 
 Underneath is [secureblue](https://secureblue.dev/features): hardened_malloc, SELinux confinement, `run0` instead of sudo, setuid stripped, restricted user namespaces, hardening kargs and sysctls.
 
@@ -56,7 +71,7 @@ Underneath is [secureblue](https://secureblue.dev/features): hardened_malloc, SE
 
 ```
 Containerfile          every build step, one target per image
-.github/workflows/     nightly build, provenance attestation, cosign signature
+.github/workflows/     nightly build, provenance attestation, cosign signature; weekly qcow2 (qcow2/: boot test)
 install.sh             trusts the key, signed rebase onto an image
 whonix.sh              verified Whonix install
 kernel/                linux-hardened source pins, forge.config, vm/*.config

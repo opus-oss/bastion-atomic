@@ -25,7 +25,8 @@ concurrency:
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/bastion-atomic-vm
   DISK: ghcr.io/${{ github.repository_owner }}/bastion-atomic-vm-qcow2
-  BIB: quay.io/centos-bootc/bootc-image-builder:latest
+  # Pinned: the builder decides the disk layout. Move it deliberately, then watch the boot test.
+  BIB: quay.io/centos-bootc/bootc-image-builder@sha256:dab86ee6b46dcade411b37f4e70b07d93b6a06da0dbfec6fe89247a220e0d9f8
 
 jobs:
   qcow2:
@@ -96,7 +97,7 @@ jobs:
           mkdir -p output
           sudo podman build -q -t localhost/bastion-bib-build --build-arg SOURCE="$IMAGE:latest" \
             -f .github/qcow2/build-container.Containerfile .github/qcow2
-          sudo podman run --rm --privileged --pull=newer \
+          sudo podman run --rm --privileged --pull=missing \
             --security-opt label=type:unconfined_t \
             -v "$PWD/.github/qcow2/config.toml:/config.toml:ro" \
             -v "$PWD/output:/output" \
