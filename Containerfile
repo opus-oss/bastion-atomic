@@ -64,9 +64,13 @@ RUN set -eux; \
 # Virtual hardware only: virtio, QEMU's emulated USB/HDA/VGA, and the platform devices of QEMU's
 # arm64 `virt` and x86 q35 machines (UTM, libvirt, virt-manager). It starts from allnoconfig, so
 # whatever kernel/vm/*.config does not ask for is not compiled at all. Built natively on each
-# architecture's runner.
+# architecture's runner, with Clang rather than GCC for kCFI (kernel/vm/common.config). LLVM=1
+# reaches every make below through the environment, configure.sh's included.
 FROM kernelsrc AS vmkernel
+RUN dnf5 install -y --setopt=install_weak_deps=False clang lld llvm && dnf5 clean all
+ENV LLVM=1
 RUN set -eux; \
+    clang --version; \
     case "$(uname -m)" in \
       aarch64) frag=arm64; target=Image; image=arch/arm64/boot/Image ;; \
       x86_64) frag=x86_64; target=bzImage; image=arch/x86/boot/bzImage ;; \

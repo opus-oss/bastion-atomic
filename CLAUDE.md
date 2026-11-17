@@ -86,8 +86,12 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
   probe before the LUKS root exists. The initramfs needs `dracut --add ostree` and the
   `kernel/initramfs-firmware.txt` list, and the build checks both.
 - **hidepid=2 breaks GDM** (its greeter's `systemd --user` cannot load `app.slice`). It was dropped.
-- **Plymouth** is off through `plymouth.enable=0`. rpm-ostree did not apply a newly added
-  `kargs.d` file on upgrade, so `install.sh` also sets the karg directly.
+- **kargs.d** (`10-secureblue.toml`, `20-bastion.toml`) is applied by `bootc install` only, so the
+  qcow2 has it and a rebased machine had none of it (secureblue leaves that to
+  `ujust set-kargs-hardening`). `bastion-kargs` appends what the default deployment lacks:
+  `install.sh` runs it on the commit it rebased onto, and in the vm image `bastion-kargs.service`
+  runs it every boot. The qcow2 boot test fails if a kargs.d karg is missing from `/proc/cmdline`.
+  Plymouth is off through `plymouth.enable=0` there.
 - **secureblue's umask is 077.** Anything a script creates for another user (for example
   `/var/lib/libvirt/images` for qemu) needs an explicit mode.
 - **Theme:** libadwaita 1.6+ reads CSS variables (`gtk4.css`), not `@define-color`. GNOME Shell
@@ -95,12 +99,15 @@ compiler and the throwaway module-signing key stay out of the images, and `shell
   `adw-gtk3-dark` Flatpak theme (from a filtered Flathub remote; filters in
   `files/usr/share/bastion/flatpak-filters`). Qt 5 KeePassXC runs frameless.
 - **Bluetooth** is blocked by secureblue by default; `ujust set-bluetooth-modules on` lifts it.
-- **vm kernel:** linux-hardened turns unprivileged user namespaces off, which breaks bubblewrap
-  (Flatpak, oo7-daemon); `USER_NS_UNPRIVILEGED=y` leaves secureblue's SELinux policy deciding.
+- **vm kernel:** built with Clang (`LLVM=1`) for kCFI; no gcc plugins. KSTACK_ERASE needs
+  Clang 21+, and 6.18 refuses `ARM64_BTI_KERNEL` with Clang 21+ and with GCC. linux-hardened turns
+  unprivileged user namespaces off, which breaks bubblewrap (Flatpak, oo7-daemon);
+  `USER_NS_UNPRIVILEGED=y` leaves secureblue's SELinux policy deciding.
   Fedora's modprobe.d pulls `snd-seq` in with `snd-pcm`. x86 selects `PERF_EVENTS`
   unconditionally, so only arm64 drops it. A config change can be checked without CI: run
-  `kernel/configure.sh` on an allnoconfig tree (`ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-` for
-  arm64).
+  `kernel/configure.sh` on an allnoconfig tree with `LLVM=1` (plus `ARCH=arm64` for arm64; the
+  kernel.org LLVM builds at cdn.kernel.org/pub/tools/llvm work in a cloud session).
+  `SECURITY_SELINUX_DEVELOP` is off, so `enforcing=0` does nothing on it.
 
 - **Amnesic boot** (`files/usr/lib/dracut/modules.d/90bastion-amnesic`, `bastion-amnesic-generator`,
   `bastion-amnesic-menu`): RAM layers go over `/etc` and the stateroot's `/var` after
