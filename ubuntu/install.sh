@@ -136,8 +136,8 @@ put "$SHARED/etc/dnscrypt-proxy/dnscrypt-proxy.toml" /etc/bastion/dnscrypt-proxy
 put "$LOCAL/etc/systemd/system/bastion-dnscrypt-proxy.service" /etc/systemd/system/bastion-dnscrypt-proxy.service
 systemctl disable --now dnscrypt-proxy.service dnscrypt-proxy.socket dnscrypt-proxy-resolvconf.service 2>/dev/null || true
 systemctl mask dnscrypt-proxy.service dnscrypt-proxy.socket dnscrypt-proxy-resolvconf.service
-systemctl disable --now systemd-resolved.service avahi-daemon.service avahi-daemon.socket cups-browsed.service 2>/dev/null || true
-systemctl mask systemd-resolved.service avahi-daemon.service avahi-daemon.socket cups-browsed.service
+systemctl disable --now systemd-resolved-monitor.socket systemd-resolved-varlink.socket systemd-resolved.service avahi-daemon.service avahi-daemon.socket cups-browsed.service 2>/dev/null || true
+systemctl mask systemd-resolved-monitor.socket systemd-resolved-varlink.socket systemd-resolved.service avahi-daemon.service avahi-daemon.socket cups-browsed.service
 if [[ -d /etc/NetworkManager/conf.d ]]; then
   put "$SHARED/etc/NetworkManager/conf.d/zz-bastion-dns.conf" /etc/NetworkManager/conf.d/zz-bastion-dns.conf
 fi
@@ -195,6 +195,7 @@ put "$SHARED/usr/share/backgrounds/opus/opus.svg" /usr/share/backgrounds/opus/op
 put "$SHARED/usr/share/gtksourceview-5/styles/opus-dark.xml" /usr/share/gtksourceview-5/styles/opus-dark.xml
 # adw-gtk3 is not packaged for Ubuntu; Yaru follows the dark colour scheme by itself.
 sed '/^gtk-theme=/d' "$SHARED/etc/dconf/db/local.d/50-opus" | install -D -m 0644 /dev/stdin /etc/dconf/db/local.d/50-opus
+install -d -m 0755 /etc/dconf/profile
 [[ -s /etc/dconf/profile/user ]] || printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user
 grep -qx 'system-db:local' /etc/dconf/profile/user || echo 'system-db:local' >> /etc/dconf/profile/user
 dconf update
