@@ -1,0 +1,7 @@
+# Claude Desktop, natively, from Anthropic's signed repository. The key is fingerprint-checked
+# by install.sh (31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE) before it goes into the keyring.
+Types: deb
+URIs: https://downloads.claude.ai/claude-desktop/apt/stable
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/bastion-claude-desktop.gpg

@@ -1,0 +1,12 @@
+# Ubuntu confines unprivileged user namespaces through AppArmor
+# (kernel.apparmor_restrict_unprivileged_userns=1), and Chromium's sandbox needs one. This is the
+# same shape as the profiles Ubuntu ships for Chrome and other Electron apps: unconfined apart
+# from being allowed a user namespace, so Claude Desktop runs with its own sandbox on.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bastion-claude-desktop /usr/lib/claude-desktop/* flags=(unconfined) {
+  userns,
+
+  include if exists <local/bastion-claude-desktop>
+}

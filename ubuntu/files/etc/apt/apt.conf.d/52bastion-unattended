@@ -1,0 +1,8 @@
+// unattended-upgrades updates Ubuntu's security pocket by default. Claude Desktop and Firefox
+// come from their own repositories, so they are added here and update the same way.
+Unattended-Upgrade::Origins-Pattern {
+  "site=downloads.claude.ai";
+  "site=packages.mozilla.org";
+};
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";

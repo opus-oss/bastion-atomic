@@ -1,0 +1,10 @@
+# snapd stays off: Firefox comes from Mozilla's apt repository instead, and nothing else here
+# needs the Snap Store's auto-refreshing, separately-confined second package system.
+Package: snapd
+Pin: release *
+Pin-Priority: -1
+
+# Ubuntu's firefox package is a transitional one that installs the snap; Mozilla's wins.
+Package: firefox*
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000

@@ -1,0 +1,7 @@
+# Firefox from Mozilla. The key is fingerprint-checked by install.sh
+# (35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3) before it goes into the keyring.
+Types: deb
+URIs: https://packages.mozilla.org/apt
+Suites: mozilla
+Components: main
+Signed-By: /etc/apt/keyrings/bastion-mozilla.gpg
