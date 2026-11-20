@@ -1,0 +1,43 @@
+#cloud-config
+# Optional: Ubuntu 26.04 Desktop installed and hardened in one pass. In the installer choose
+# "Automated installation" and give it this file's raw URL:
+#   https://raw.githubusercontent.com/opus-oss/bastion-atomic/main/ubuntu/autoinstall.yaml
+#
+# The disk (choose LUKS there) and your account stay interactive, so no passphrase or password is
+# written into this file. ubuntu/install.sh needs a running system, so it runs once on the first
+# boot (bastion-first-boot.service), then the machine reboots into the hardened setup.
+# Progress: journalctl -u bastion-first-boot
+autoinstall:
+  version: 1
+  interactive-sections: [storage, identity]
+  source:
+    id: ubuntu-desktop-minimal
+  codecs:
+    install: false
+  drivers:
+    install: false
+  oem:
+    install: false
+  updates: security
+  late-commands:
+    - curtin in-target -- apt-get install -y git
+    - curtin in-target -- git clone https://github.com/opus-oss/bastion-atomic.git /opt/bastion-atomic
+    - |
+      cat > /target/etc/systemd/system/bastion-first-boot.service <<'EOF'
+      [Unit]
+      Description=Apply bastion's hardening once (ubuntu/install.sh), then reboot
+      Wants=network-online.target
+      After=network-online.target
+      ConditionPathExists=!/var/lib/bastion/first-boot.done
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/bash /opt/bastion-atomic/ubuntu/install.sh
+      ExecStartPost=/usr/bin/install -D -m 0644 /dev/null /var/lib/bastion/first-boot.done
+      ExecStartPost=/usr/bin/systemctl --no-block reboot
+      TimeoutStartSec=infinity
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+    - curtin in-target -- systemctl enable bastion-first-boot.service

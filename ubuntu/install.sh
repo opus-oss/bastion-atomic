@@ -27,7 +27,7 @@ put() { install -D -m "${3:-0644}" "$1" "$2"; }   # put <src> <dest> [mode]
 # apt-get purge fails outright on a name it does not know, so only pass what is installed.
 purge_installed() {
   local p have=()
-  for p in "$@"; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' && have+=("$p"); done
+  for p in "$@"; do [[ $(dpkg-query -W -f='${Status}' "$p" 2>/dev/null) == *"ok installed" ]] && have+=("$p"); done
   (( ${#have[@]} == 0 )) || "${APT[@]}" purge "${have[@]}"
 }
 
@@ -97,7 +97,9 @@ put "$LOCAL/etc/apt/sources.list.d/bastion-claude-desktop.sources" /etc/apt/sour
 put "$LOCAL/etc/apt/apt.conf.d/52bastion-unattended" /etc/apt/apt.conf.d/52bastion-unattended
 "${APT[@]}" update
 "${APT[@]}" install firefox claude-desktop
-apt-cache policy firefox | grep -q packages.mozilla.org || { echo "firefox is not from Mozilla" >&2; exit 1; }
+# Captured first: `| grep -q` under pipefail fails when grep exits before apt-cache is done writing.
+policy=$(apt-cache policy firefox)
+[[ $policy == *packages.mozilla.org* ]] || { echo "firefox is not from Mozilla:"; echo "$policy"; exit 1; } >&2
 
 # --- Kernel: sysctl, modules, arguments ----------------------------------------------------------
 log "sysctl, module blocklist, kernel arguments"
