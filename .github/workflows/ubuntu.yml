@@ -39,7 +39,7 @@ jobs:
           apt-get update -q
           DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
             ca-certificates curl gnupg xz-utils patch make flex bison bc python3 perl \
-            clang lld llvm libelf-dev libssl-dev openssl dpkg-dev rsync cpio kmod dwarves
+            clang lld llvm libelf-dev libssl-dev openssl dpkg-dev debhelper rsync cpio kmod dwarves
       - uses: actions/checkout@v4
       - name: Build
         run: bash ubuntu/kernel/build.sh out
