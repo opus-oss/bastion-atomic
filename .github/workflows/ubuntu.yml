@@ -1,7 +1,9 @@
-# Test ubuntu/install.sh: boot Ubuntu 26.04's cloud image in QEMU, run the installer twice (the
-# second run must succeed on the already-hardened system, with DNS through dnscrypt-proxy), reboot
-# so the kernel arguments and blocklist apply, then run ubuntu/tests/check.sh in the guest.
-# Nothing is published. arm64 runners have no KVM, so that leg runs under TCG and is slow.
+# The Ubuntu port. `kernel` builds the vm kernel for Ubuntu guests as a .deb (ubuntu/kernel/build.sh).
+# `test` boots Ubuntu 26.04's cloud image in QEMU, runs ubuntu/install.sh twice with that .deb (the
+# second run must succeed on the already-hardened system, DNS going through dnscrypt-proxy),
+# reboots into the new kernel and runs ubuntu/tests/check.sh in the guest. On main, `publish` then
+# cosign-signs the tested .debs and puts them on the ubuntu-kernel release, where install.sh takes
+# them from. arm64 runners have no KVM, so that leg of the test runs under TCG and is slow.
 name: ubuntu
 
 on:
@@ -10,16 +12,46 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [ubuntu/**, files/**, .github/workflows/ubuntu.yml]
+    paths: [ubuntu/**, files/**, kernel/**, Containerfile, cosign.pub, .github/workflows/ubuntu.yml]
 
 concurrency:
   group: ubuntu-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
+  kernel:
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    container: ubuntu:26.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
+            ca-certificates curl gnupg xz-utils patch make flex bison bc python3 perl \
+            clang lld llvm libelf-dev libssl-dev openssl dpkg-dev rsync cpio kmod dwarves
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash ubuntu/kernel/build.sh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: out/*.deb
+
+  test:
+    needs: kernel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +68,10 @@ jobs:
       SSH: ssh -p 2222 -i key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=30 -o LogLevel=ERROR ubuntu@127.0.0.1
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: kernel-deb
 
       - name: Tools
         run: |
@@ -81,14 +117,17 @@ jobs:
       - name: Install (twice), reboot
         run: |
           set -euo pipefail
-          tar c files ubuntu | $SSH 'mkdir -p bastion && tar x -C bastion'
+          deb=$(ls kernel-deb/linux-image-*.deb)
+          kver=$(dpkg-deb -f "$deb" Package); echo "EXPECT_KERNEL=${kver#linux-image-}" >> "$GITHUB_ENV"
+          tar c files ubuntu cosign.pub kernel-deb | $SSH 'mkdir -p bastion && tar x -C bastion'
           $SSH 'sudo cloud-init status --wait >/dev/null || true'
           # One ssh session for both runs: after the first, the firewall drops new inbound
           # connections, and only this established one survives. Then, CI only, open ssh so the
           # runner can reconnect after the reboot. Full output is in the logs artifact.
           if ! $SSH 'set -e
-                sudo bash bastion/ubuntu/install.sh > install-1.log 2>&1 || { tail -n 60 install-1.log; exit 1; }
-                sudo bash bastion/ubuntu/install.sh > install-2.log 2>&1 || { tail -n 60 install-2.log; exit 1; }
+                deb=$(ls ~/bastion/kernel-deb/linux-image-*.deb)
+                sudo BASTION_KERNEL_DEB="$deb" bash bastion/ubuntu/install.sh > install-1.log 2>&1 || { tail -n 60 install-1.log; exit 1; }
+                sudo BASTION_KERNEL_DEB="$deb" bash bastion/ubuntu/install.sh > install-2.log 2>&1 || { tail -n 60 install-2.log; exit 1; }
                 grep "^== " install-2.log
                 sudo sed -i "s/^    iif lo accept\$/&\n    tcp dport 22 accept/" /etc/nftables/bastion.nft
                 sudo systemctl reload bastion-nftables.service'; then
@@ -102,7 +141,7 @@ jobs:
           echo "no ssh after reboot"; exit 1
 
       - name: Check
-        run: $SSH 'sudo bash bastion/ubuntu/tests/check.sh'
+        run: $SSH "sudo EXPECT_KERNEL=$EXPECT_KERNEL bash bastion/ubuntu/tests/check.sh"
 
       - name: Logs
         if: always()
@@ -110,3 +149,44 @@ jobs:
         with:
           name: logs-${{ matrix.arch }}
           path: "*.log"
+
+  publish:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kernel-*
+          merge-multiple: true
+          path: debs
+      - uses: sigstore/cosign-installer@v3
+      # A plain signature over each .deb with the key the images are signed with (SIGNING_SECRET),
+      # so install.sh can check it with openssl against cosign.pub, no cosign needed on the guest.
+      - name: Sign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          for d in debs/*.deb; do
+            cosign sign-blob --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY --output-signature "$d.sig" "$d"
+            base64 -d "$d.sig" > raw.sig
+            openssl dgst -sha256 -verify cosign.pub -signature raw.sig "$d"
+          done
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=ubuntu-kernel
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --latest=false \
+            --title "Ubuntu vm kernel" \
+            --notes "linux-hardened, virtual hardware only, for Ubuntu 26.04 guests. Installed and kept up to date by ubuntu/install.sh, which checks each .deb's .sig against cosign.pub. Rebuilt and replaced by .github/workflows/ubuntu.yml."
+          old=$(gh release view "$tag" --json assets -q '.assets[].name')
+          gh release upload "$tag" debs/*.deb debs/*.deb.sig --clobber
+          new=$(cd debs && ls)
+          for a in $old; do grep -qxF "$a" <<<"$new" || gh release delete-asset "$tag" "$a" -y; done

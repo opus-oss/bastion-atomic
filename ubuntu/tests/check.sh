@@ -4,6 +4,7 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 fail=0
+bastion_kernel=0; [[ $(uname -r) == *-bastion-ubuntu ]] && bastion_kernel=1
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fail=1; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
@@ -18,10 +19,20 @@ ok "kargs checked ($(wc -w <<<"$kargs"))"
 while IFS='=' read -r k v; do
   k=$(xargs <<<"$k"); v=$(xargs <<<"$v")
   [[ -z $k || $k == \#* ]] && continue
+  # Compiled out of the bastion kernel (kexec, perf, ...) is stronger than switched off.
+  [[ $bastion_kernel == 1 && ! -e /proc/sys/${k//.//} ]] && continue
   [[ $(sysctl -n "$k" 2>/dev/null | xargs) == "$v" ]] || bad "sysctl $k = $v (is $(sysctl -n "$k" 2>&1))"
 done < "$HERE/../../files/etc/sysctl.d/90-bastion.conf"
 ok "sysctl checked"
-check "kernel.apparmor_restrict_unprivileged_userns=1" test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+if [[ -n ${EXPECT_KERNEL:-} ]]; then check "running $EXPECT_KERNEL (is $(uname -r))" test "$(uname -r)" = "$EXPECT_KERNEL"; fi
+if [[ $bastion_kernel == 1 ]]; then
+  check "unprivileged user namespaces off" test "$(sysctl -n kernel.unprivileged_userns_clone)" = 0
+  check "AppArmor is an active LSM" grep -qw apparmor /sys/kernel/security/lsm
+  check "Ubuntu's kernel kept as fallback" bash -c 'ls /boot/vmlinuz-*-generic'
+  check "chrome-sandbox setuid" test -u /usr/lib/claude-desktop/chrome-sandbox
+else
+  check "kernel.apparmor_restrict_unprivileged_userns=1" test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+fi
 
 check "modprobe dccp refused" bash -c '! modprobe dccp'
 check "lockdown is confidentiality" grep -q '\[confidentiality\]' /sys/kernel/security/lockdown

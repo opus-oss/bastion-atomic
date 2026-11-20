@@ -105,11 +105,65 @@ policy=$(apt-cache policy firefox)
 log "sysctl, module blocklist, kernel arguments"
 put "$SHARED/etc/sysctl.d/90-bastion.conf" /etc/sysctl.d/90-bastion.conf
 put "$SHARED/etc/modprobe.d/90-bastion-blocked.conf" /etc/modprobe.d/90-bastion-blocked.conf
-sysctl -q --system
+# -e: keys the running kernel lacks (the bastion kernel compiles out kexec, perf, ...) are skipped.
+sysctl -e -q --system
 put "$LOCAL/etc/default/grub.d/90-bastion.cfg" /etc/default/grub.d/90-bastion.cfg
 update-grub
 # The blocklist has to be in the initramfs too, or a module loaded there escapes it.
 if command -v dracut >/dev/null; then dracut -q --force --regenerate-all; else update-initramfs -u -k all; fi
+
+# --- Kernel: the minimal linux-hardened vm kernel -------------------------------------------------
+# bastion-atomic-vm's kernel (kernel/vm), built for Ubuntu in CI as a .deb, cosign-signed with this
+# repo's key and published as the ubuntu-kernel release. Virtual hardware only, so only on a
+# QEMU/KVM guest. Ubuntu's kernel stays installed as the fallback entry in GRUB.
+# BASTION_KERNEL=stock skips it; BASTION_KERNEL_DEB=<file> installs a local build (CI).
+install_bastion_kernel() {
+  local virt arch tmp deb kver
+  virt=$(systemd-detect-virt 2>/dev/null || true)
+  if [[ ${BASTION_KERNEL:-} == stock ]]; then log "Kernel: keeping Ubuntu's (BASTION_KERNEL=stock)"; return; fi
+  case $virt in kvm|qemu) ;; *) log "Kernel: not a QEMU/KVM guest ($virt), keeping Ubuntu's"; return ;; esac
+  log "Kernel: linux-hardened, virtual hardware only"
+  arch=$(dpkg --print-architecture)
+  tmp=$(mktemp -d)
+  if [[ -n ${BASTION_KERNEL_DEB:-} ]]; then
+    deb=$tmp/$(basename "$BASTION_KERNEL_DEB"); cp "$BASTION_KERNEL_DEB" "$deb"
+  else
+    local api=https://api.github.com/repos/opus-oss/bastion-atomic/releases/tags/ubuntu-kernel url
+    if ! url=$(curl -fsSL "$api" | python3 -c 'import json,sys
+for a in json.load(sys.stdin)["assets"]:
+    if a["name"].startswith("linux-image-") and a["name"].endswith("_'"$arch"'.deb"): print(a["browser_download_url"])'); then
+      echo "no published kernel yet; keeping Ubuntu's" >&2; rm -rf "$tmp"; return
+    fi
+    [[ -n $url && $url != *$'\n'* ]] || { echo "expected one $arch kernel in the release, got: $url" >&2; exit 1; }
+    deb=$tmp/$(basename "$url")
+    curl -fsSL --proto '=https' "$url" -o "$deb"
+    curl -fsSL --proto '=https' "$url.sig" -o "$tmp/sig.b64"
+    base64 -d "$tmp/sig.b64" > "$tmp/sig"
+    openssl dgst -sha256 -verify "$HERE/../cosign.pub" -signature "$tmp/sig" "$deb" >/dev/null ||
+      { echo "$(basename "$deb"): signature does not verify against cosign.pub" >&2; exit 1; }
+    echo "$(basename "$deb"): signature good (cosign.pub)"
+  fi
+  kver=$(dpkg-deb -f "$deb" Package); kver=${kver#linux-image-}
+  "${APT[@]}" install "$deb"
+  [[ -e /boot/initrd.img-$kver ]] || dracut -q --force --kver "$kver"
+  # Chromium's sandbox needs a user namespace, which this kernel does not give unprivileged
+  # processes, or its setuid helper. Electron apps ship the helper; make sure Claude Desktop's is.
+  local sb
+  for sb in /usr/lib/claude-desktop/chrome-sandbox; do
+    [[ -e $sb ]] && { dpkg-statoverride --list "$sb" >/dev/null || dpkg-statoverride --update --add root root 4755 "$sb"; }
+  done
+  cat > /etc/default/grub.d/91-bastion-kernel.cfg <<CFG
+# Boot the bastion kernel by default (written by ubuntu/install.sh). Ubuntu's kernel is still in
+# the menu: hold Shift (BIOS) or press Esc (UEFI) at boot to pick it.
+GRUB_DISABLE_SUBMENU=y
+GRUB_DEFAULT="Ubuntu, with Linux $kver"
+CFG
+  update-grub
+  grep -qF "menuentry 'Ubuntu, with Linux $kver'" /boot/grub/grub.cfg ||
+    { echo "no GRUB entry for $kver; remove /etc/default/grub.d/91-bastion-kernel.cfg" >&2; exit 1; }
+  rm -rf "$tmp"
+}
+install_bastion_kernel
 
 log "No core dumps"
 put "$LOCAL/etc/systemd/coredump.conf.d/50-bastion.conf" /etc/systemd/coredump.conf.d/50-bastion.conf
@@ -213,4 +267,4 @@ if [[ -n ${SUDO_USER:-} && $SUDO_USER != root ]]; then
   theme_user "$(getent passwd "$SUDO_USER" | cut -d: -f6)" "$SUDO_USER"
 fi
 
-log "Done. Reboot to boot with the kernel arguments and module blocklist."
+log "Done. Reboot to boot with the kernel, its arguments and the module blocklist."
