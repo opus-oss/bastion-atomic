@@ -78,25 +78,24 @@ jobs:
           for i in $(seq 180); do $SSH true 2>/dev/null && exit 0; sleep 10; done
           echo "no ssh after 30 minutes"; exit 1
 
-      - name: Install (twice)
+      - name: Install (twice), reboot
         run: |
           set -euo pipefail
           tar c files ubuntu | $SSH 'mkdir -p bastion && tar x -C bastion'
           $SSH 'sudo cloud-init status --wait >/dev/null || true'
-          # Full output goes to an artifact; the log shows the section headers and the tail on failure.
-          for run in 1 2; do
-            if ! $SSH 'sudo bash bastion/ubuntu/install.sh' > install-$run.log 2>&1; then
-              grep '^== ' install-$run.log; echo '--- last 60 lines'; tail -n 60 install-$run.log; exit 1
-            fi
-            grep '^== ' install-$run.log
-          done
-
-      - name: Reboot
-        run: |
-          set -euo pipefail
-          # CI only: the ruleset drops new inbound connections, so open ssh for the runner to
-          # reconnect after the reboot. Not part of the installer.
-          $SSH "sudo sed -i 's/^    iif lo accept\$/&\n    tcp dport 22 accept/' /etc/nftables/bastion.nft"
+          # One ssh session for both runs: after the first, the firewall drops new inbound
+          # connections, and only this established one survives. Then, CI only, open ssh so the
+          # runner can reconnect after the reboot. Full output is in the logs artifact.
+          if ! $SSH 'set -e
+                sudo bash bastion/ubuntu/install.sh > install-1.log 2>&1 || { tail -n 60 install-1.log; exit 1; }
+                sudo bash bastion/ubuntu/install.sh > install-2.log 2>&1 || { tail -n 60 install-2.log; exit 1; }
+                grep "^== " install-2.log
+                sudo sed -i "s/^    iif lo accept\$/&\n    tcp dport 22 accept/" /etc/nftables/bastion.nft
+                sudo systemctl reload bastion-nftables.service'; then
+            $SSH 'cat install-*.log' > install.log 2>/dev/null || true
+            exit 1
+          fi
+          $SSH 'cat install-1.log install-2.log' > install.log
           $SSH 'sudo systemctl reboot' || true
           sleep 30
           for i in $(seq 180); do $SSH true 2>/dev/null && exit 0; sleep 10; done
