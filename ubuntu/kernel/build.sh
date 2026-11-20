@@ -42,7 +42,8 @@ for f in "${frags[@]}"; do args+=("$repo/kernel/vm/$f.config"); done
 bash "$repo/kernel/configure.sh" . "${args[@]}"
 # Package version: the kernel's plus the build time, so every build upgrades the last one.
 make -s -j"$(nproc)" bindeb-pkg KDEB_PKGVERSION="${KERNEL_VERSION}-$(date -u +%Y%m%d%H%M)" \
-  KDEB_SOURCENAME=linux-bastion-ubuntu
+  KDEB_SOURCENAME=linux-bastion-ubuntu KDEB_CHANGELOG_DIST=resolute \
+  DPKG_FLAGS=-d  # the generated Build-Depends name GCC packages; this is a Clang build
 install -d "$out"
 for d in ../linux-image-*.deb; do [[ $d == *-dbg_* ]] || mv "$d" "$out/"; done
 ls "$out"/linux-image-*-bastion-ubuntu_*.deb >/dev/null
