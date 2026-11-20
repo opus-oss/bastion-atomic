@@ -21,7 +21,7 @@ To update: `git pull && sudo bash ubuntu/install.sh`. Packages update through un
 - [x] Minimal linux-hardened kernel in QEMU/KVM guests (UTM, libvirt): bastion-atomic-vm's virtual-hardware-only config with AppArmor, Clang kCFI, no unprivileged user namespaces; built and signed in CI, Ubuntu's kernel kept as the GRUB fallback (`BASTION_KERNEL=stock` to skip)
 - [x] Kernel arguments: secureblue's set plus bastion's (lockdown, module signatures enforced, IOMMU, init_on_free, slab hardening, mitigations with SMT off)
 - [x] sysctl hardening and module blocklist, shared with the Atomic images
-- [x] nftables firewall: default-drop inbound, no forwarding, plaintext DNS rejected (ufw off)
+- [x] nftables firewall: default-drop inbound, no forwarding, plaintext DNS rejected (ufw off); local exceptions in `/etc/bastion/nftables-input.nft`, one rule per line
 - [x] DNS over HTTPS only (dnscrypt-proxy on 127.0.0.1:53); systemd-resolved, avahi and cups-browsed off
 - [x] Clock from HTTPS Date headers with a quorum, no NTP (chrony and timesyncd off)
 - [x] USBGuard: devices present at boot allowed, new ones blocked (`sudo usbguard allow-device <id>`)

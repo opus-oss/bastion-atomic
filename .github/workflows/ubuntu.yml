@@ -121,20 +121,17 @@ jobs:
           kver=$(dpkg-deb -f "$deb" Package); echo "EXPECT_KERNEL=${kver#linux-image-}" >> "$GITHUB_ENV"
           tar c files ubuntu cosign.pub kernel-deb | $SSH 'mkdir -p bastion && tar x -C bastion'
           $SSH 'sudo cloud-init status --wait >/dev/null || true'
-          # One ssh session for both runs: after the first, the firewall drops new inbound
-          # connections, and only this established one survives. Then, CI only, open ssh so the
-          # runner can reconnect after the reboot. Full output is in the logs artifact.
-          if ! $SSH 'set -e
-                deb=$(ls ~/bastion/kernel-deb/linux-image-*.deb)
-                sudo BASTION_KERNEL_DEB="$deb" bash bastion/ubuntu/install.sh > install-1.log 2>&1 || { tail -n 60 install-1.log; exit 1; }
-                sudo BASTION_KERNEL_DEB="$deb" bash bastion/ubuntu/install.sh > install-2.log 2>&1 || { tail -n 60 install-2.log; exit 1; }
-                grep "^== " install-2.log
-                sudo sed -i "s/^    iif lo accept\$/&\n    tcp dport 22 accept/" /etc/nftables/bastion.nft
-                sudo systemctl reload bastion-nftables.service'; then
-            $SSH 'cat install-*.log' > install.log 2>/dev/null || true
-            exit 1
-          fi
-          $SSH 'cat install-1.log install-2.log' > install.log
+          # CI only: the runner reaches the guest over ssh, which the ruleset would drop. This is
+          # the installer's own local-exception file, not a change to it.
+          $SSH 'sudo install -D -m 0644 /dev/stdin /etc/bastion/nftables-input.nft <<< "tcp dport 22 accept"'
+          # Both runs in a transient unit, so a dropped ssh session (TCG is slow) cannot kill them.
+          $SSH "sudo systemd-run --unit=ci-install --setenv=BASTION_KERNEL_DEB=/home/ubuntu/bastion/$deb \
+            /bin/bash -c 'cd /home/ubuntu && { bash bastion/ubuntu/install.sh > install-1.log 2>&1 && bash bastion/ubuntu/install.sh > install-2.log 2>&1; echo \$? > install.rc; }'"
+          for i in $(seq 480); do $SSH 'test -e install.rc' 2>/dev/null && break; sleep 15; done
+          $SSH 'cat install-1.log install-2.log 2>/dev/null' > install.log || true
+          rc=$($SSH 'cat install.rc' || echo none)
+          grep '^== ' install.log || true
+          if [ "$rc" != 0 ]; then echo "install failed (rc=$rc)"; tail -n 60 install.log; exit 1; fi
           $SSH 'sudo systemctl reboot' || true
           sleep 30
           for i in $(seq 180); do $SSH true 2>/dev/null && exit 0; sleep 10; done

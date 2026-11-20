@@ -174,6 +174,16 @@ put "$LOCAL/etc/security/limits.d/50-bastion-nocore.conf" /etc/security/limits.d
 # plaintext DNS rejected so nothing can route around the encrypted resolver.
 log "Firewall (nftables, ufw off)"
 put "$SHARED/etc/nftables/bastion.nft" /etc/nftables/bastion.nft
+# Local exceptions: each line of /etc/bastion/nftables-input.nft (for example `tcp dport 22 accept`)
+# goes into the input chain right after loopback. Kept outside bastion.nft, which a re-run replaces.
+if [[ -s /etc/bastion/nftables-input.nft ]]; then
+  awk -v extra=/etc/bastion/nftables-input.nft '
+    { print }
+    $0 == "    iif lo accept" { while ((getline l < extra) > 0) if (l !~ /^[[:space:]]*(#|$)/) print "    " l; found = 1 }
+    END { exit !found }' /etc/nftables/bastion.nft > /etc/nftables/bastion.nft.new
+  mv /etc/nftables/bastion.nft.new /etc/nftables/bastion.nft
+  nft -c -f /etc/nftables/bastion.nft
+fi
 put "$SHARED/usr/lib/systemd/system/bastion-nftables.service" /etc/systemd/system/bastion-nftables.service
 command -v ufw >/dev/null && ufw disable >/dev/null 2>&1 || true
 # nftables.service loads /etc/nftables.conf, which starts with `flush ruleset`.
