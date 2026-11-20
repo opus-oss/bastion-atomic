@@ -20,7 +20,22 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SHARED=$HERE/../files
 LOCAL=$HERE/files
 export DEBIAN_FRONTEND=noninteractive
-APT=(apt-get -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+# Waits up to 10 minutes for dpkg's lock (unattended-upgrades, apt-daily) instead of failing.
+APT=(apt_get -y -q -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+# `apt-get update` takes /var/lib/apt/lists/lock, which the timeout above may not cover: retry
+# while another apt holds it, for up to 10 minutes.
+apt_get() {
+  local i err
+  err=$(mktemp)
+  for i in $(seq 40); do
+    if apt-get "$@" 2>"$err"; then cat "$err" >&2; rm -f "$err"; return 0; fi
+    cat "$err" >&2
+    grep -q 'Could not get lock' "$err" || { rm -f "$err"; return 1; }
+    echo "apt is busy (another apt run holds the lock); retrying in 15s" >&2
+    sleep 15
+  done
+  rm -f "$err"; return 1
+}
 
 log() { printf '\n== %s\n' "$*"; }
 put() { install -D -m "${3:-0644}" "$1" "$2"; }   # put <src> <dest> [mode]
@@ -109,8 +124,16 @@ put "$SHARED/etc/modprobe.d/90-bastion-blocked.conf" /etc/modprobe.d/90-bastion-
 sysctl -e -q --system
 put "$LOCAL/etc/default/grub.d/90-bastion.cfg" /etc/default/grub.d/90-bastion.cfg
 update-grub
-# The blocklist has to be in the initramfs too, or a module loaded there escapes it.
-if command -v dracut >/dev/null; then dracut -q --force --regenerate-all; else update-initramfs -u -k all; fi
+# The blocklist has to be in the initramfs too, or a module loaded there escapes it. Only kernels
+# that have an image: a removed-but-not-purged one leaves /usr/lib/modules/<ver>/modules.dep behind,
+# which dracut --regenerate-all takes for a kernel and then fails on. The output path is explicit:
+# with /boot/efi mounted, dracut otherwise guesses a /boot/efi/<machine-id>/<ver>/ layout.
+for img in /boot/vmlinuz-*; do
+  v=${img#/boot/vmlinuz-}
+  [[ -e $img && -d /usr/lib/modules/$v/kernel ]] || continue
+  if command -v dracut >/dev/null; then dracut -q --force --kver "$v" "/boot/initrd.img-$v"
+  else update-initramfs -u -k "$v"; fi
+done
 
 # --- Kernel: the minimal linux-hardened vm kernel -------------------------------------------------
 # bastion-atomic-vm's kernel (kernel/vm), built for Ubuntu in CI as a .deb, cosign-signed with this
@@ -145,7 +168,7 @@ for a in json.load(sys.stdin)["assets"]:
   fi
   kver=$(dpkg-deb -f "$deb" Package); kver=${kver#linux-image-}
   "${APT[@]}" install "$deb"
-  [[ -e /boot/initrd.img-$kver ]] || dracut -q --force --kver "$kver"
+  [[ -e /boot/initrd.img-$kver ]] || dracut -q --force --kver "$kver" "/boot/initrd.img-$kver"
   # Chromium's sandbox needs a user namespace, which this kernel does not give unprivileged
   # processes, or its setuid helper. Electron apps ship the helper; make sure Claude Desktop's is.
   local sb

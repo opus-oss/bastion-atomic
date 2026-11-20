@@ -124,6 +124,9 @@ jobs:
           # CI only: the runner reaches the guest over ssh, which the ruleset would drop. This is
           # the installer's own local-exception file, not a change to it.
           $SSH 'sudo install -D -m 0644 /dev/stdin /etc/bastion/nftables-input.nft <<< "tcp dport 22 accept"'
+          # A removed-but-not-purged kernel (dpkg "rc") leaves a modules.dep with no image behind;
+          # install.sh must skip it rather than hand it to dracut.
+          $SSH 'sudo install -D -m 0644 /dev/null /usr/lib/modules/7.0.0-1-stale-generic/modules.dep'
           # Both runs in a transient unit, so a dropped ssh session (TCG is slow) cannot kill them.
           $SSH "sudo systemd-run --unit=ci-install --setenv=BASTION_KERNEL_DEB=/home/ubuntu/bastion/$deb \
             /bin/bash -c 'cd /home/ubuntu && { bash bastion/ubuntu/install.sh > install-1.log 2>&1 && bash bastion/ubuntu/install.sh > install-2.log 2>&1; echo \$? > install.rc; }'"
